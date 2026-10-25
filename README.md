@@ -23,7 +23,7 @@ MCP 协议为手写实现（JSON-RPC 2.0），零第三方 SDK 依赖；默认 S
 
 ```bash
 # 1. 放进你的 Creator 项目（git clone 或下载 zip 解压均可）
-git clone https://github.com/<你的用户名>/cocos-mcp.git <你的项目>/extensions/cocos-mcp
+git clone https://github.com/lixxix/cocos-mcp.git <你的项目>/extensions/cocos-mcp
 
 # 2. 安装面板运行依赖（仅 fs-extra）
 cd <你的项目>/extensions/cocos-mcp
