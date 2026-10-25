@@ -1,0 +1,28 @@
+# 依赖（克隆后 npm install 可重建）
+node_modules/
+jspm_packages/
+
+# TypeScript 增量编译缓存
+*.tsbuildinfo
+
+dist/
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 运行时临时文件
+temp/
+local/
+.cache/
+*.tmp

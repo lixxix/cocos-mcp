@@ -1,0 +1,18 @@
+{
+    "name": "cocos-mcp-server",
+    "version": "0.2.1",
+    "private": true,
+    "description": "自研 Cocos Creator MCP Server（默认 Streamable HTTP，兼容 stdio，零第三方依赖）",
+    "main": "index.js",
+    "bin": {
+        "cocos-mcp-server": "index.js"
+    },
+    "scripts": {
+        "start": "node index.js",
+        "start:stdio": "node index.js --stdio",
+        "check": "node index.js --check"
+    },
+    "engines": {
+        "node": ">=16"
+    }
+}

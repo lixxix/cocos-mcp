@@ -1,0 +1,27 @@
+<div id="app" class="mcp-panel">
+    <div id="hint" class="hint" style="display: none"></div>
+
+    <section class="group">
+        <h3 class="group-title">MCP Server</h3>
+        <div class="row">
+            <span id="mcp-dot" class="status-dot stopped"></span>
+            <span id="mcp-status-text" class="status-text">检测中…</span>
+        </div>
+        <div class="row">
+            <label class="field"><span>端口</span><input id="input-mcp-port" class="input num" type="number" value="3002" min="1" max="65535" step="1" /></label>
+            <button id="btn-mcp-start" class="btn primary">启动 MCP</button>
+            <button id="btn-mcp-stop" class="btn danger" disabled>停止</button>
+            <button id="btn-reload" class="btn">重载扩展</button>
+        </div>
+        <p class="tip">MCP Server 以 Streamable HTTP 运行（node mcp-server/index.js），供 MCP 客户端通过 http://127.0.0.1:&lt;端口&gt;/mcp 接入</p>
+    </section>
+
+    <section class="group">
+        <h3 class="group-title">AI 协作规范</h3>
+        <div class="row">
+            <button id="btn-agents-md" class="btn primary">写入 AGENTS.md</button>
+            <span class="status-text">把设计规范写入项目根 AGENTS.md（幂等，可重复执行同步最新版）</span>
+        </div>
+        <p class="tip">规范源文件：mcp-server/conventions.md。MCP 侧也提供 conventions 工具供 AI 设计时查询；AGENTS.md 会被 ZCode / Claude Code 等工具自动读取</p>
+    </section>
+</div>

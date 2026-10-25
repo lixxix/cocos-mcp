@@ -1,0 +1,1 @@
+"use strict";module.exports={open_panel:"Cocos MCP 控制台",description:"自研 Cocos MCP 服务的编辑器扩展：面板 + 操作层 + MCP Server 进程管理"};

@@ -1,0 +1,1 @@
+"use strict";module.exports={open_panel:"Cocos MCP Console",description:"Self-built Cocos MCP editor extension: panel + operations layer + MCP Server process management"};

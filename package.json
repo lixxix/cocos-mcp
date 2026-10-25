@@ -1,0 +1,117 @@
+{
+    "$schema": "./@types/schema/package/index.json",
+    "package_version": 2,
+    "name": "cocos-mcp",
+    "version": "1.0.1",
+    "author": "lixxix",
+    "editor": ">=3.8.8",
+    "scripts": {
+        "preinstall": "node ./scripts/preinstall.js",
+        "build": "npx tsc"
+    },
+    "description": "i18n:cocos-mcp.description",
+    "main": "./dist/main.js",
+    "dependencies": {
+        "fs-extra": "^10.0.0"
+    },
+    "devDependencies": {
+        "@cocos/creator-types": "^3.8.8",
+        "@types/fs-extra": "^9.0.5",
+        "@types/node": "^18.17.1",
+        "typescript": "^5.8.2"
+    },
+    "panels": {
+        "default": {
+            "title": "i18n:cocos-mcp.open_panel",
+            "type": "dockable",
+            "main": "dist/panels/default",
+            "size": {
+                "min-width": 400,
+                "min-height": 300,
+                "width": 1024,
+                "height": 600
+            }
+        }
+    },
+    "contributions": {
+        "menu": [
+            {
+                "path": "i18n:menu.extension",
+                "label": "i18n:cocos-mcp.open_panel",
+                "message": "open-panel"
+            }
+        ],
+        "scene": {
+            "script": "./dist/scene.js",
+            "methods": [
+                "engineInfo",
+                "createNode",
+                "moveNode",
+                "listNodes",
+                "addComponentToNode",
+                "setNodeProperty",
+                "readComponentProperty",
+                "listRegisteredClasses",
+                "captureScene",
+                "captureCanvas",
+                "captureDiag"
+            ]
+        },
+        "messages": {
+            "open-panel": {
+                "methods": [
+                    "openPanel"
+                ]
+            },
+            "run-operation": {
+                "methods": [
+                    "runOperation"
+                ],
+                "public": true,
+                "description": "统一操作入口：{ op, params }，返回 { ok, op, data, error, cost, ts }"
+            },
+            "list-operations": {
+                "methods": [
+                    "listOperations"
+                ],
+                "public": true,
+                "description": "列出全部可用操作，供面板渲染与 MCP tools/list 使用"
+            },
+            "bridge-status": {
+                "methods": [
+                    "bridgeStatus"
+                ],
+                "public": true,
+                "description": "查询本地 HTTP 桥状态：端口、端口文件路径、鉴权 token"
+            },
+            "mcp-start": {
+                "methods": [
+                    "mcpStart"
+                ],
+                "public": true,
+                "description": "启动 mcp-server 子进程（Streamable HTTP），参数 { port }，返回 { ok, state | error }"
+            },
+            "mcp-stop": {
+                "methods": [
+                    "mcpStop"
+                ],
+                "public": true,
+                "description": "停止本扩展启动的 mcp-server 子进程，返回 { ok, state | error }"
+            },
+            "mcp-status": {
+                "methods": [
+                    "mcpStatus"
+                ],
+                "public": true,
+                "description": "查询 mcp-server 运行状态：是否运行、端口、端点地址、pid、最近输出"
+            },
+            "agents-md-write": {
+                "methods": [
+                    "agentsMdWrite"
+                ],
+                "public": true,
+                "description": "把扩展内 mcp-server/conventions.md 设计规范写入项目根 AGENTS.md（锚点幂等合并），返回 { ok, file, action, bytes }"
+            }
+        }
+    }
+}
