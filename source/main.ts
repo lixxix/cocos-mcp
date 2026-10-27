@@ -6,6 +6,7 @@ import { MAIN_BUILD } from './build-info';
 import { startBridge, stopBridge, getBridge } from './bridge';
 import { startMcpServer, stopMcpServer, mcpServerStatus, McpServerState } from './mcp-process';
 import { writeAgentsMd, AgentsMdResult } from './agents-md';
+import { checkForUpdate, applyUpdate as applyUpdateOp, UpdateCheckResult, UpdateApplyResult } from './updater';
 import { OperationRequest, OperationResult } from './types';
 
 /**
@@ -129,6 +130,36 @@ export const methods: { [key: string]: (...any: any) => any } = {
      */
     agentsMdWrite(): AgentsMdResult {
         return writeAgentsMd();
+    },
+
+    /**
+     * 检查扩展更新（对比 GitHub 更新源的 package.json 版本）
+     * @param payload { force?: boolean } force=true 跳过 1 小时缓存强制联网
+     */
+    async checkUpdate(payload?: { force?: boolean }): Promise<UpdateCheckResult> {
+        try {
+            return await checkForUpdate(payload);
+        } catch (e: any) {
+            const message = e && e.message ? e.message : String(e);
+            log('check-update', { error: message }, 'error');
+            return { ok: false, current: String((packageJSON as any).version || ''), hasUpdate: false, error: message };
+        }
+    },
+
+    /**
+     * 执行扩展更新：下载 zip 覆盖扩展目录（先自动停 MCP Server）。
+     * 重载扩展由面板在拿到成功结果后触发，主进程不自己 disable 自己。
+     */
+    async applyUpdate(): Promise<UpdateApplyResult> {
+        try {
+            const result = await applyUpdateOp();
+            log('apply-update', result);
+            return result;
+        } catch (e: any) {
+            const message = e && e.message ? e.message : String(e);
+            log('apply-update', { error: message }, 'error');
+            return { ok: false, from: String((packageJSON as any).version || ''), error: message };
+        }
     },
 };
 

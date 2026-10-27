@@ -2,12 +2,18 @@
     "$schema": "./@types/schema/package/index.json",
     "package_version": 2,
     "name": "cocos-mcp",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "author": "lixxix",
     "editor": ">=3.8.8",
+    "update": {
+        "repo": "lixxix/cocos-mcp",
+        "branch": "main",
+        "subdir": ""
+    },
     "scripts": {
         "preinstall": "node ./scripts/preinstall.js",
-        "build": "npx tsc"
+        "build": "npx tsc",
+        "pack:zip": "node ./scripts/pack.js"
     },
     "description": "i18n:cocos-mcp.description",
     "main": "./dist/main.js",
@@ -111,6 +117,20 @@
                 ],
                 "public": true,
                 "description": "把扩展内 mcp-server/conventions.md 设计规范写入项目根 AGENTS.md（锚点幂等合并），返回 { ok, file, action, bytes }"
+            },
+            "check-update": {
+                "methods": [
+                    "checkUpdate"
+                ],
+                "public": true,
+                "description": "检查扩展更新：对比本地与 GitHub 更新源（package.json 的 update 字段）的版本号，返回 { ok, current, latest, hasUpdate, checkedAt, error }，默认走 1 小时缓存，传 { force: true } 强制联网"
+            },
+            "apply-update": {
+                "methods": [
+                    "applyUpdate"
+                ],
+                "public": true,
+                "description": "执行扩展更新：下载更新源分支 zip、解压校验后覆盖扩展目录（先自动停 MCP Server），返回 { ok, from, to, backup, notice, error }；重载扩展由面板触发"
             }
         }
     }

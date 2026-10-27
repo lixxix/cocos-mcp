@@ -5,7 +5,9 @@ jspm_packages/
 # TypeScript 增量编译缓存
 *.tsbuildinfo
 
-dist/
+# 注意：dist/ 是编译产物，但必须提交——
+# Cocos Creator 加载的是 dist/main.js，不提交的话克隆者必须先
+# npm install && npm run build 才能启用扩展。
 
 # 日志
 *.log
@@ -26,3 +28,6 @@ temp/
 local/
 .cache/
 *.tmp
+
+# 打包产物（npm run pack:zip 生成，用于上传 GitHub Release）
+release/

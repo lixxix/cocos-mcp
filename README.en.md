@@ -32,6 +32,26 @@ npm install --production
 
 The compiled output `dist/` is committed, so **no npm run build is needed**. Open the project in Cocos Creator and enable cocos-mcp in "Developer → Extension Manager". (Without step 2 the main process still works, but the panel fails to load due to missing fs-extra.)
 
+## Self-Update
+
+The "Version & Update" section in the panel can check for new versions and update in one click. The update source is configured in the extension's `package.json` under the `update` field:
+
+```json
+"update": {
+    "repo": "owner/cocos-mcp",        // GitHub repo (owner/repo), empty = update check disabled
+    "branch": "main",                 // branch to update from
+    "subdir": "extensions/cocos-mcp"  // subdirectory of the extension inside the repo; "" if the repo root is the extension
+}
+```
+
+How it works:
+
+- **Check**: compares the local version against the branch's `package.json` on `raw.githubusercontent.com`; results are cached for 1 hour (checked automatically when the panel opens, or on demand via the button);
+- **One-click update**: downloads the branch zip → extracts with System32 bsdtar / PowerShell → verifies the version is not older → replaces the extension directory (the old directory is renamed to a sibling `.cocos-mcp.bak-<timestamp>`; if the directory is locked it falls back to in-place overwrite) → reloads the extension automatically;
+- MCP Server is stopped before the update; after it finishes, click "Start MCP" in the panel again.
+
+To release a new version: change code → bump `version` in `package.json` → `npm run pack:zip` (rebuilds first, then produces `release/cocos-mcp-v<version>.zip` containing a single `cocos-mcp/` folder with the compiled output and the production dependency closure — users just extract it into `<project>/extensions/`) → push to the configured branch. **The branch push is what drives auto-updates for existing users**; the zip can be attached to a GitHub Release for first-time manual installs.
+
 ## Quick Start
 
 ### 1. Start the server
@@ -65,6 +85,7 @@ Set `COCOS_MCP_TOKEN=<random-string>` before starting, then add to the client co
 
 - **MCP Server card**: start / stop / custom port, shows endpoint and pid; instances left over from an editor restart are reported as external;
 - **Write AGENTS.md**: idempotently writes `mcp-server/conventions.md` into the project root `AGENTS.md`;
+- **Version & Update**: shows current / latest version, highlights when an update is available, one-click update with automatic extension reload (see "Self-Update");
 - **Reload Extension**: one-click reload after changing extension code.
 
 ## Tool Overview (29 ops + 2 built-ins = 31)

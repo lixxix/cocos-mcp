@@ -24,4 +24,14 @@
         </div>
         <p class="tip">规范源文件：mcp-server/conventions.md。MCP 侧也提供 conventions 工具供 AI 设计时查询；AGENTS.md 会被 ZCode / Claude Code 等工具自动读取</p>
     </section>
+
+    <section class="group">
+        <h3 class="group-title">版本与更新</h3>
+        <div class="row">
+            <span id="update-status-text" class="status-text">检查中…</span>
+            <button id="btn-check-update" class="btn">检查更新</button>
+            <button id="btn-apply-update" class="btn primary" disabled>一键更新</button>
+        </div>
+        <p class="tip">更新源：GitHub 仓库 main 分支（扩展 package.json 的 update 字段）。更新前自动停 MCP Server，完成后自动重载扩展，MCP 需重新点启动</p>
+    </section>
 </div>

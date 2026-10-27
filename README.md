@@ -32,6 +32,26 @@ npm install --production
 
 编译产物 `dist/` 已随仓库提交，**无需 npm run build**。用 Cocos Creator 打开项目，在「开发者 → 扩展管理器」里启用 cocos-mcp 即可。（跳过第 2 步时扩展主进程仍可工作，但面板会因缺 fs-extra 加载失败。）
 
+## 扩展自更新
+
+面板「版本与更新」区块支持检查新版本并一键更新。更新源配置在扩展 `package.json` 的 `update` 字段：
+
+```json
+"update": {
+    "repo": "owner/cocos-mcp",        // GitHub 仓库（owner/repo），空 = 未配置更新
+    "branch": "main",                 // 更新来源分支
+    "subdir": "extensions/cocos-mcp"  // 仓库内扩展所在子目录；仓库根就是扩展时留 ""
+}
+```
+
+工作方式：
+
+- **检查更新**：对比本地版本与 `raw.githubusercontent.com` 上该分支 `package.json` 的版本，结果缓存 1 小时（打开面板自动检查，也可点按钮强制刷新）；
+- **一键更新**：下载分支 zip → System32 bsdtar / PowerShell 解压 → 校验版本不低于当前 → 覆盖扩展目录（旧目录改名为同级的 `.cocos-mcp.bak-<时间戳>`，目录被占用时退化为原地覆盖）→ 自动重载扩展；
+- 更新前会自动停掉 MCP Server，更新完成后需在面板重新点「启动 MCP」。
+
+发布新版本：改代码 → bump `package.json` 的 `version` → `npm run pack:zip`（脚本先重新编译，再生成 `release/cocos-mcp-v<版本>.zip`，内含单个 `cocos-mcp/` 目录、编译产物与生产依赖闭包，解压到 `<项目>/extensions/` 即装好）→ push 到 `update` 配置的分支。**分支推送驱动已有用户的自动更新**；zip 可作为 GitHub Release 附件，供新用户首次手动安装。
+
 ## 快速开始
 
 ### 1. 启动服务
@@ -65,6 +85,7 @@ ZCode / Claude Code 风格配置：
 
 - **MCP Server 卡片**：启动 / 停止 / 自定义端口，显示端点地址与 pid；编辑器重启后遗留的实例会被识别为「外部实例」；
 - **「写入 AGENTS.md」**：把规范源 `mcp-server/conventions.md` 幂等写入当前项目根 `AGENTS.md`；
+- **「版本与更新」**：显示当前 / 最新版本，发现新版本时高亮，一键更新后自动重载扩展（见「扩展自更新」）；
 - **「重载扩展」**：改完扩展代码后一键重载，等价于扩展管理器停用再启用。
 
 ## 工具一览（30 op + 2 内置 = 32）

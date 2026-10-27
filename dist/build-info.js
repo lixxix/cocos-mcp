@@ -1,0 +1,12 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.PANEL_BUILD = exports.MAIN_BUILD = void 0;
+/**
+ * 代码版本戳。
+ *
+ * 每次改动操作层/主进程/面板/场景脚本时同步更新这里的字符串，
+ * 日志里会带上它，这样一眼就能确认编辑器里跑的到底是哪一份代码。
+ */
+exports.MAIN_BUILD = 'main-20261027-1845';
+exports.PANEL_BUILD = 'panel-20261027-1845';
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoiYnVpbGQtaW5mby5qcyIsInNvdXJjZVJvb3QiOiIiLCJzb3VyY2VzIjpbIi4uL3NvdXJjZS9idWlsZC1pbmZvLnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiI7OztBQUFBOzs7OztHQUtHO0FBQ1UsUUFBQSxVQUFVLEdBQUcsb0JBQW9CLENBQUM7QUFDbEMsUUFBQSxXQUFXLEdBQUcscUJBQXFCLENBQUMiLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIOS7o+eggeeJiOacrOaIs+OAglxuICpcbiAqIOavj+asoeaUueWKqOaTjeS9nOWxgi/kuLvov5vnqIsv6Z2i5p2/L+WcuuaZr+iEmuacrOaXtuWQjOatpeabtOaWsOi/memHjOeahOWtl+espuS4su+8jFxuICog5pel5b+X6YeM5Lya5bim5LiK5a6D77yM6L+Z5qC35LiA55y85bCx6IO956Gu6K6k57yW6L6R5Zmo6YeM6LeR55qE5Yiw5bqV5piv5ZOq5LiA5Lu95Luj56CB44CCXG4gKi9cbmV4cG9ydCBjb25zdCBNQUlOX0JVSUxEID0gJ21haW4tMjAyNjEwMjctMTg0NSc7XG5leHBvcnQgY29uc3QgUEFORUxfQlVJTEQgPSAncGFuZWwtMjAyNjEwMjctMTg0NSc7XG4iXX0=

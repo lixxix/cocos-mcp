@@ -6,10 +6,11 @@ import { MAIN_BUILD, PANEL_BUILD } from '../../build-info';
 /**
  * Cocos MCP 控制面板
  *
- * 面板不含业务逻辑，只提供三件事：
+ * 面板不含业务逻辑，只提供四件事：
  *  1. 启动 / 停止 MCP Server（状态每 2.5 秒自动刷新）；
  *  2. 把设计规范写入项目根 AGENTS.md；
- *  3. 重载扩展。
+ *  3. 检查更新 / 一键更新（更新后自动重载扩展）；
+ *  4. 重载扩展。
  *
  * 全部通过消息调用扩展主进程；消息通道不通（主进程尚未重载）时
  * 自动兜底直连最新的 dist/main.js，改完代码不重启编辑器也能用。
@@ -111,6 +112,8 @@ const DIRECT_METHOD_MAP: { [key: string]: string } = {
     'mcp-stop': 'mcpStop',
     'mcp-status': 'mcpStatus',
     'agents-md-write': 'agentsMdWrite',
+    'check-update': 'checkUpdate',
+    'apply-update': 'applyUpdate',
 };
 
 /** 调用扩展主进程的方法，消息通道不通时自动兜底直连 */
@@ -180,6 +183,77 @@ async function refreshMcpStatus(elements: PanelElements): Promise<void> {
     }
 }
 
+/** 把 check-update 的返回渲染到「版本与更新」区块 */
+function renderUpdateState(elements: PanelElements, result: any): void {
+    const text = elements.updateStatusText;
+    const btnApply = elements.btnApplyUpdate as HTMLButtonElement | null;
+    if (!text) return;
+
+    const suffix = result && result.cached ? '（1 小时内缓存）' : '';
+    if (result && result.ok) {
+        if (result.hasUpdate) {
+            text.textContent = `当前 v${result.current} · 最新 v${result.latest}${suffix}，发现新版本！`;
+            text.classList.add('update-available');
+            if (btnApply) btnApply.disabled = false;
+        } else {
+            text.textContent = `当前 v${result.current} · 已是最新${suffix}`;
+            text.classList.remove('update-available');
+            if (btnApply) btnApply.disabled = true;
+        }
+    } else {
+        text.classList.remove('update-available');
+        const error = result && result.error ? `：${result.error}` : '';
+        text.textContent = `当前 v${result && result.current ? result.current : '?'} · 检查失败${error}`;
+        if (btnApply) btnApply.disabled = true;
+    }
+}
+
+/** 请求检查更新并刷新「版本与更新」区块；force=true 跳过缓存强制联网 */
+async function refreshUpdateState(elements: PanelElements, force: boolean): Promise<void> {
+    const btnCheck = elements.btnCheckUpdate as HTMLButtonElement | null;
+    if (btnCheck) btnCheck.disabled = true;
+    try {
+        const result = await callMcpMethod('check-update', { force });
+        renderUpdateState(elements, result);
+        if (!result || !result.ok) {
+            const message = result && result.error ? result.error : '未知错误';
+            log('panel-update-check', { error: message }, 'warn');
+            if (force) showHint(elements, `检查更新失败：${message}`);
+        }
+    } catch (e: any) {
+        renderUpdateState(elements, null);
+        if (force) showHint(elements, `检查更新失败：${e && e.message ? e.message : String(e)}`);
+    } finally {
+        if (btnCheck) btnCheck.disabled = false;
+    }
+}
+
+/** 重载扩展：能拿到 Editor.Package 就自动做，拿不到就给出人工步骤 */
+function reloadExtension(elements: PanelElements): void {
+    const pkg = (Editor as any)?.Package;
+    let pkgPath = '';
+    try {
+        pkgPath = pkg?.getPath?.(EXTENSION_NAME) || '';
+    } catch (e) {
+        pkgPath = '';
+    }
+    if (!pkg || !pkgPath) {
+        showHint(elements,
+            '当前面板拿不到 Editor.Package，无法自动重载。请手动操作：' +
+            '「开发者 → 扩展管理器」→ 停用 cocos-mcp → 再启用；或直接重启编辑器。');
+        return;
+    }
+    log('panel-reload', { path: pkgPath });
+    try {
+        pkg.disable(pkgPath);
+        // disable 会把扩展主进程干掉，enable 走的是编辑器主进程的消息队列
+        pkg.enable(pkgPath);
+        showHint(elements, `已重载扩展 ${pkgPath}。若面板被关闭，请重新打开「Cocos MCP 控制台」。`);
+    } catch (e: any) {
+        showHint(elements, `重载失败：${e && e.message ? e.message : String(e)}`);
+    }
+}
+
 module.exports = Editor.Panel.define({
     listeners: {
         show() {
@@ -200,6 +274,9 @@ module.exports = Editor.Panel.define({
         btnMcpStop: '#btn-mcp-stop',
         inputMcpPort: '#input-mcp-port',
         btnAgentsMd: '#btn-agents-md',
+        updateStatusText: '#update-status-text',
+        btnCheckUpdate: '#btn-check-update',
+        btnApplyUpdate: '#btn-apply-update',
         btnReload: '#btn-reload',
     },
     ready() {
@@ -267,32 +344,47 @@ module.exports = Editor.Panel.define({
             });
         }
 
-        // ---- 重载扩展：能拿到 Editor.Package 就自动做，拿不到就给出人工步骤 ----
+        // ---- 版本与更新：打开面板自动检查（走缓存），按钮可强制刷新/一键更新 ----
+        const btnCheckUpdate = elements.btnCheckUpdate as HTMLButtonElement | null;
+        if (btnCheckUpdate) {
+            btnCheckUpdate.addEventListener('click', () => {
+                void refreshUpdateState(elements, true);
+            });
+        }
+
+        const btnApplyUpdate = elements.btnApplyUpdate as HTMLButtonElement | null;
+        if (btnApplyUpdate) {
+            btnApplyUpdate.addEventListener('click', () => {
+                if (btnCheckUpdate) btnCheckUpdate.disabled = true;
+                btnApplyUpdate.disabled = true;
+                const statusText = elements.updateStatusText;
+                if (statusText) {
+                    statusText.classList.remove('update-available');
+                    statusText.textContent = '正在更新：下载 → 解压 → 覆盖扩展目录…（可能需要几十秒）';
+                }
+                void callMcpMethod('apply-update').then((result: any) => {
+                    if (result && result.ok) {
+                        renderUpdateState(elements, { ok: true, current: result.to, hasUpdate: false });
+                        showHint(elements, `已更新到 v${result.to}，正在重载扩展…${result.notice || ''}`);
+                        reloadExtension(elements);
+                    } else {
+                        showHint(elements, `更新失败：${result && result.error ? result.error : '未知错误'}`);
+                        void refreshUpdateState(elements, true);
+                    }
+                }).catch((e: any) => {
+                    showHint(elements, `更新失败：${e && e.message ? e.message : String(e)}`);
+                    void refreshUpdateState(elements, true);
+                });
+            });
+        }
+
+        void refreshUpdateState(elements, false);
+
+        // ---- 重载扩展 ----
         const reloadButton = elements.btnReload;
         if (reloadButton) {
             reloadButton.addEventListener('click', () => {
-                const pkg = (Editor as any)?.Package;
-                let pkgPath = '';
-                try {
-                    pkgPath = pkg?.getPath?.(EXTENSION_NAME) || '';
-                } catch (e) {
-                    pkgPath = '';
-                }
-                if (!pkg || !pkgPath) {
-                    showHint(elements,
-                        '当前面板拿不到 Editor.Package，无法自动重载。请手动操作：' +
-                        '「开发者 → 扩展管理器」→ 停用 cocos-mcp → 再启用；或直接重启编辑器。');
-                    return;
-                }
-                log('panel-reload', { path: pkgPath });
-                try {
-                    pkg.disable(pkgPath);
-                    // disable 会把扩展主进程干掉，enable 走的是编辑器主进程的消息队列
-                    pkg.enable(pkgPath);
-                    showHint(elements, `已重载扩展 ${pkgPath}。若面板被关闭，请重新打开「Cocos MCP 控制台」。`);
-                } catch (e: any) {
-                    showHint(elements, `重载失败：${e && e.message ? e.message : String(e)}`);
-                }
+                reloadExtension(elements);
             });
         }
 
