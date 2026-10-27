@@ -165,7 +165,7 @@ curl -s -X DELETE http://127.0.0.1:3002/mcp -H "Mcp-Session-Id: <会话 id>"
 | `editor_info` | 编辑器 / 项目信息 | — |
 | `scene_status` | 场景就绪 / 脏标记 / 选中节点 | — |
 | `scene_tree` | 场景节点树（含 uuid、组件、坐标） | — |
-| `node_create` | 创建节点 | `name?`, `parent?` |
+| `node_create` | 创建节点；`builtin`/`prefab` 可一步实例化内置模板或任意预制体（完整子树 + 默认资源引用） | `name?`, `parent?`, `builtin?`, `prefab?` |
 | `node_delete` | 删除节点 | `uuid?` |
 | `node_move` | 移动节点（编辑器消息通道，走 undo） | `uuid?`, `x?`, `y?`, `z?` |
 | `node_move_engine` | 移动节点（场景脚本引擎通道） | `uuid?`, `x?`, `y?`, `z?` |
@@ -187,6 +187,7 @@ curl -s -X DELETE http://127.0.0.1:3002/mcp -H "Mcp-Session-Id: <会话 id>"
 | `node_debug` | 节点原始 dump（摸字段名用） | `node` |
 | `scene_capture` | 场景视口截图，base64 JPEG（需场景含 Canvas；可传 outPath 落盘） | `maxW?`, `outPath?` |
 | `scene_reopen` | 保存并重开当前场景（外部写入的 .ts 编译后需这一步才能在引擎里挂载） | — |
+| `project_set_design_resolution` | 设置项目设计分辨率（等价项目设置面板；Profile 落盘 + 广播刷新画布，返回回读与落盘校验） | `width`, `height`, `fitWidth?`, `fitHeight?` |
 | `node_create_component_msg` | 挂组件（`scene/create-component` 消息通道直通，支持脚本 cid） | `node`, `component` |
 | `batch_run` | 批量顺序执行一组操作；参数支持 `"$0.uuid"` 引用前项结果；不可嵌套 | `items`, `stopOnError?` |
 | `mcp_status` | 查询 mcp-server 子进程运行状态（端口 / pid / 探活） | — |
@@ -203,6 +204,16 @@ curl -s -X DELETE http://127.0.0.1:3002/mcp -H "Mcp-Session-Id: <会话 id>"
 | 留空 | 建在**场景根**下（确定性，MCP 默认） |
 | `@selection` | 建在编辑器当前选中节点下 |
 | 具体 uuid | 建在该节点下 |
+
+`node_create` 的模板模式（编辑器「创建」菜单同款机制：`create-node` + `assetUuid` 一步实例化，不是建空节点再挂组件）：
+
+| 参数 | 行为 |
+|---|---|
+| `builtin` | 内置模板短名，对应 `db://internal/default_prefab/<短名>.prefab`；**常用模板都带子目录前缀**：UI 用 `ui/Button`、`ui/Label`、`ui/Sprite`、`ui/Canvas`、`ui/ScrollView`，3D 用 `3d/Cube`、`3d/Sphere`，灯光用 `light/Point Light`；裸短名 `Button`、`Label`、`Sprite` 不存在（会报「找不到 prefab 资产」，报错里会给出带前缀的正确写法）；全集用 `asset_list(pattern="db://internal/default_prefab/**/*.prefab")` 查 |
+| `prefab` | 任意 prefab 资产（`db://` url 或 uuid，含项目自己的预制体），实例化进场景；与 `builtin` 二选一 |
+
+模板模式返回值额外带 `template` / `templateUuid` / `nodeCount` / `subtree`（完整子树结构）；
+`ui/*` 模板要求场景先有 Canvas（`canvasRequired`，Canvas 模板本身除外）；缺省节点名取模板名并按父节点去重（如 `Button-001`）。
 
 `script_create` 与 `node_add_component` 的配合流程：
 

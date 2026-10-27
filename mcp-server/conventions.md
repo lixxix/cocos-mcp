@@ -262,6 +262,28 @@ Scene
 
 ---
 
+## 7. MCP 操作通道实测坑位（3.8.8，批量搭场景前必读）
+
+以下行为与直觉不符且**多数静默失败**（返回 ok 但没生效），动手前先对照：
+
+| 操作 | 坑 | 可靠做法 |
+|---|---|---|
+| `node.setProperty` | `uuid` 不解析节点路径，传路径静默无效 | 只传真实 uuid（从 scene_tree / batch 结果取） |
+| `node.setProperty` | 多组件节点设 `contentSize` 静默失败 | 用 `node.setProperty.engine` 传 `{"__size":[w,h]}`（带 applied 回读，scene.save 后落盘） |
+| `node.bindProperty` | `bindings` 多条数组只有第一条生效 | 每条绑定单独一次调用（可并行发） |
+| `batch.run` | `"$N"` 引用仅限同一次调用内；`node.create` 的 parent 引用无效时节点被静默建到场景根 | 跨批先取回真实 uuid 再引用；每批之后审计场景根孤儿 |
+| `node.addComponent` | 自定义脚本解析不到类名；参数名是 `node` 不是 `uuid` | 先 `script.list` 查 cid 再传 |
+| 节点颜色 | 节点级 `color` 对渲染无效 | 设 `components.<索引>.color` |
+| `scene.capture` | 异步 repaint，刚切换节点激活状态会拿到旧帧（连续两次字节量相同即旧帧） | sleep ~1.5s 后重拍；outPath 用绝对路径 |
+| `scene.reopen` | 外部写入的 .ts 不会因此编译注册 | 对每个改动过的脚本调一次 `asset.import`（纯刷新模式，uuid 不变、cid 稳定） |
+| `scene.open` | 会先保存当前场景再切换；先切空场景强制干净重载，避免复用内存脏场景 | 崩溃恢复后先 scene_tree 查重名/孤儿再继续 |
+| 默认值陷阱 | Label 默认 `string='label'`、`fontSize=40`；UITransform 默认 `100×100` | 批量搭建后按这两类默认值审计漏设节点 |
+| 验证 | 消息通道多数属性无回读；`node.debug` 路径解析不稳 | 落盘 ground truth：直接读 `.scene` 文件（JSON，组件在 `_components[].__id__`） |
+
+组件索引规则：`create-node` 自动附 `cc.UITransform`（`components.0`），后续 `addComponent` 依次追加（Sprite/Label/Button=1，Mask 节点的 Button=2）；追加组件会改变既有索引，多组件节点操作前先 `node.listComponents` 确认。
+
+---
+
 ## 附录：项目路径约定（按实际情况修改）
 
 | 内容 | 路径 |

@@ -1,6 +1,6 @@
 // @ts-ignore
 import packageJSON from '../package.json';
-import { copyFile, mkdir, readdir, stat, writeFile } from 'fs/promises';
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
 import { basename, dirname, extname, join, resolve } from 'path';
 import { JsonSchema, OperationInfo } from './types';
 import { MAIN_BUILD } from './build-info';
@@ -276,13 +276,66 @@ const sceneTree: OperationDefinition = {
     },
 };
 
+/**
+ * 把 builtin 短名 / prefab 引用统一解析成可实例化的 prefab 资产。
+ * - builtin：db://internal/default_prefab/<短名>.prefab，即编辑器「创建」菜单同款内置模板
+ * - prefab：db:// url 或 uuid，任意 prefab 资产（含项目自己的预制体）
+ * 两者都为空返回 null（= 普通空节点模式）。
+ */
+async function resolvePrefabAsset(builtin: string, prefab: string): Promise<{ uuid: string; url: string; name: string } | null> {
+    if (builtin && prefab) {
+        throw new Error('builtin 与 prefab 只能二选一');
+    }
+    let target = '';
+    if (builtin) {
+        const short = builtin.trim().replace(/\.prefab$/i, '').replace(/^\/+|\/+$/g, '');
+        target = `db://internal/default_prefab/${short}.prefab`;
+    } else if (prefab) {
+        target = prefab.trim();
+    } else {
+        return null;
+    }
+    let info: any = null;
+    try {
+        info = await Editor.Message.request(ASSET_DB, 'query-asset-info', target);
+    } catch (e) {
+        info = null;
+    }
+    if (!info || !info.uuid) {
+        let hint = builtin ? '；可用 asset_list(pattern="db://internal/default_prefab/**/*.prefab") 查看全部内置模板' : '';
+        if (builtin) {
+            // 3.8 内置模板绝大多数在 ui/、3d/、light/ 子目录下，裸短名基本不存在；探测命中时直接给出正确写法
+            const short = builtin.trim().replace(/^ui\//i, '');
+            for (const dir of ['ui', '3d', 'light']) {
+                try {
+                    const alt = await Editor.Message.request(ASSET_DB, 'query-asset-info', `db://internal/default_prefab/${dir}/${short}.prefab`);
+                    if (alt && alt.uuid) {
+                        hint = `；该模板在 ${dir}/ 子目录下，正确写法是 builtin="${dir}/${short}"`;
+                        break;
+                    }
+                } catch (e) {
+                    // 探测失败不影响原本的报错
+                }
+            }
+        }
+        throw new Error(`找不到 prefab 资产: ${target}${hint}`);
+    }
+    if (info.type && info.type !== 'cc.Prefab') {
+        throw new Error(`目标资产不是 prefab（${info.type}）: ${info.url || target}`);
+    }
+    const url: string = info.url || target;
+    return { uuid: info.uuid, url, name: basename(url).replace(/\.prefab$/i, '') };
+}
+
 const nodeCreate: OperationDefinition = {
     name: 'node.create',
     title: '创建节点',
-    description: '通过 scene/create-node 创建一个空节点（走编辑器 undo 体系）。编辑器会自动附加 cc.UITransform，勿重复 addComponent',
+    description: '通过 scene/create-node 创建节点，走编辑器 undo 体系。三种用法：1) 默认建空节点（编辑器自动附加 cc.UITransform，勿重复 addComponent）；2) builtin=内置模板短名，映射到 db://internal/default_prefab/<短名>.prefab，一步实例化完整模板（含子节点与默认资源引用）；常用模板都带子目录前缀——UI 用 ui/Button、ui/Label、ui/Sprite、ui/Canvas、ui/ScrollView 等（要求场景已有 Canvas），3D 用 3d/Cube、3d/Sphere，灯光用 light/Point Light；裸短名 Button、Label、Sprite 不存在，会报「找不到 prefab 资产」；全量列表用 asset_list(pattern="db://internal/default_prefab/**/*.prefab") 查询；3) prefab=任意预制体（db:// url 或 uuid），把已有 prefab 实例化进场景。注意：parent 必须是真实节点 uuid（不解析路径），引用无效时节点会被静默建到场景根（不报错），批量搭建后建议审计场景根是否出现孤儿节点',
     params: {
-        name: '节点名，默认 MCP_Node',
-        parent: '父节点 uuid；留空则建在场景根下；填 @selection 则建在当前选中节点下',
+        name: '节点名，缺省时空节点用 MCP_Node、模板模式用模板名（并按父节点生成不重名名字）',
+        parent: '父节点 uuid（不支持路径，无效时静默建到场景根）；留空则建在场景根下；填 @selection 则建在当前选中节点下',
+        builtin: '内置模板短名，映射到 db://internal/default_prefab/<builtin>.prefab；常用模板都带子目录前缀：ui/Button、ui/Label、ui/Sprite、ui/Canvas、ui/ScrollView、3d/Cube、3d/Sphere、light/Point Light；裸短名 Button、Label、Sprite 不存在（须写 ui/Button 等）；与 prefab 二选一；全集用 asset_list(pattern="db://internal/default_prefab/**/*.prefab") 查',
+        prefab: '任意 prefab 资产（db:// url 或 uuid），实例化进场景，与 builtin 二选一',
     },
     schema: {
         type: 'object',
@@ -290,13 +343,22 @@ const nodeCreate: OperationDefinition = {
             name: { type: 'string', description: '节点名' },
             parent: {
                 type: 'string',
-                description: '父节点 uuid；留空则建在场景根下；填 @selection 则建在当前选中节点下',
+                description: '父节点 uuid（不支持路径，无效时静默建到场景根）；留空则建在场景根下；填 @selection 则建在当前选中节点下',
+            },
+            builtin: {
+                type: 'string',
+                description: '内置模板短名，映射到 db://internal/default_prefab/<builtin>.prefab，常用模板都带子目录前缀：ui/Button、ui/Label、ui/Sprite、ui/Canvas、3d/Cube、light/Point Light；裸短名 Button、Label、Sprite 不存在（须写 ui/Button 等）；与 prefab 二选一',
+            },
+            prefab: {
+                type: 'string',
+                description: '任意 prefab 资产（db:// url 或 uuid），实例化进场景，与 builtin 二选一',
             },
         },
         additionalProperties: false,
     },
     async run(params) {
-        const name = pickString(params, 'name', '') || 'MCP_Node';
+        const builtin = pickString(params, 'builtin', '').trim();
+        const prefab = pickString(params, 'prefab', '').trim();
         const rawParent = pickString(params, 'parent', '').trim();
         let parent = '';
         let parentSource = 'scene-root';
@@ -313,14 +375,55 @@ const nodeCreate: OperationDefinition = {
             parentSource = 'params';
         }
 
+        const template = await resolvePrefabAsset(builtin, prefab);
+
+        const rawName = pickString(params, 'name', '');
+        let name = rawName || (template ? template.name : '') || 'MCP_Node';
+        // 与编辑器菜单一致：模板模式下按父节点生成不重名的名字
+        if (template && !rawName && parent) {
+            try {
+                const available = await Editor.Message.request(SCENE, 'generate-available-name', name, parent);
+                if (typeof available === 'string' && available) name = available;
+            } catch (e) {
+                // 该消息不可用时保持原名，重名不影响创建
+            }
+        }
+
         const options: any = { name };
         if (parent) options.parent = parent;
+        if (template) {
+            options.assetUuid = template.uuid;
+            options.snapshot = true;
+            // 与编辑器菜单一致：UI 模板要求场景里有 Canvas（Canvas 模板本身除外）
+            if (builtin.toLowerCase().startsWith('ui/') && template.name.toLowerCase() !== 'canvas') {
+                options.canvasRequired = true;
+            }
+        }
 
-        const uuid = await Editor.Message.request(SCENE, 'create-node', options);
-        // 编辑器创建节点时会自动附加 cc.UITransform，这里回读告诉调用方，别再重复 addComponent
-        const comps = await queryNodeComponents(uuid);
+        let uuid = '';
+        try {
+            uuid = await Editor.Message.request(SCENE, 'create-node', options);
+        } catch (e: any) {
+            const hint = options.canvasRequired
+                ? '；ui/* 模板要求场景先有 Canvas，可先 node_create(builtin="Canvas")'
+                : '';
+            throw new Error(`create-node 失败: ${e?.message || e}${hint}`);
+        }
+
+        // 一次 query-node-tree 同时回读组件列表（空节点模式的 cc.UITransform 提示）与模板子树
+        const tree: any = await Editor.Message.request(SCENE, 'query-node-tree');
+        const found = findNodeInTree(tree, uuid);
+        const comps = readNodeComponents(found);
         const hasUITransform = comps.some((c: any) => c.type === 'cc.UITransform');
-        return { uuid, name, parent: parent || null, parentSource, components: comps, hasUITransform };
+        const result: any = { uuid, name, parent: parent || null, parentSource, components: comps, hasUITransform };
+        if (template) {
+            result.source = builtin ? 'builtin-template' : 'prefab';
+            result.template = template.url;
+            result.templateUuid = template.uuid;
+            result.nodeCount = countNodes(found);
+            result.subtree = formatNodeTree(found);
+        }
+        return result;
     },
 };
 
@@ -449,13 +552,15 @@ const nodeSetProperty: OperationDefinition = {
     title: '设置属性（消息通道）',
     description:
         '通过 scene/set-property 设置节点或组件属性（走编辑器 undo 体系）。' +
+        '注意：uuid 必须是真实节点 uuid，本操作不解析节点路径（传路径会静默无效）；' +
+        '多组件节点设 contentSize 在本通道会静默失败，改用 node_set_property_engine（{"__size":[w,h]}，带 applied 回读）。' +
         'path 写法：节点属性直接写名字（position / name / active）；组件属性写 components.<索引>.<属性>，' +
         '索引用 node_list_components 查（如 components.0.string、components.2.contentSize）。' +
         'value 是纯 JSON；结构化值（{x,y,z}/{width,height}/{r,g,b,a}）会自动识别成 cc.Vec3/cc.Size/cc.Color。' +
         '引用类型属性（@property(Label) 之类）传 type=cc.Label、value={"uuid":"目标组件或节点uuid"}；' +
         '引用绑定优先用 node_bind_property（自动定位组件/解析目标/批量/回读验证）。',
     params: {
-        uuid: '节点 uuid，留空则用当前选中节点',
+        uuid: '节点 uuid（不支持路径），留空则用当前选中节点',
         path: '属性路径，如 position、components.0.string',
         value: '属性值（纯 JSON）',
         type: '可选。dump 类型名（cc.Vec3/cc.Size/cc.Color/cc.Label/cc.Node…），不传时按 value 形状自动识别',
@@ -464,7 +569,7 @@ const nodeSetProperty: OperationDefinition = {
     schema: {
         type: 'object',
         properties: {
-            uuid: { type: 'string', description: '节点 uuid，留空则用当前选中节点' },
+            uuid: { type: 'string', description: '节点 uuid（不支持路径），留空则用当前选中节点' },
             path: { type: 'string', description: '属性路径，如 position、components.0.string' },
             value: { description: '属性值' },
             type: { type: 'string', description: 'dump 类型名（可选）' },
@@ -761,7 +866,7 @@ const nodeBindProperty: OperationDefinition = {
         '{"node":"Pannel/badge","component":"ItemBadge"} 组件引用（推荐，自动解析目标 uuid 与 dump 类型，嵌套 prefab 内的组件也能定位）；' +
         '{"node":"路径或uuid"} 节点引用（cc.Node）；{"asset":"db://assets/x.png/spriteFrame"} 资产引用；null 解绑。' +
         'target 也可直接传 uuid 字符串（此时建议显式传 type）。' +
-        '批量：bindings=[{uuid,component,property,target},…] 一次提交（一条 undo）。' +
+        '批量：bindings=[{uuid,component,property,target},…] 形式上支持，但当前实现多条只有第一条真正生效（已知问题），请一条一个调用（可并行发）。' +
         '绑定后自动回读场景实际引用验证，不一致会报错。',
     params: {
         uuid: '属性所在节点：uuid 或节点路径，留空用当前选中节点',
@@ -770,7 +875,7 @@ const nodeBindProperty: OperationDefinition = {
         target: '绑定目标：{node,component} 组件引用 | {node} 节点引用 | {asset:"db://…"} 资产 | uuid 字符串 | null 解绑',
         type: '可选。dump 类型名（默认自动推断：组件→类名、节点→cc.Node、资产→资源类型）',
         path: '可选。原始属性路径（如 __comps__.1.badge），传了就跳过 component/property 拼装',
-        bindings: '批量绑定数组，每项 {uuid,component,property,target[,type]}，与单条参数二选一',
+        bindings: '批量绑定数组（当前多条只有第一条生效，建议逐条调用），每项 {uuid,component,property,target[,type]}，与单条参数二选一',
     },
     schema: {
         type: 'object',
@@ -786,7 +891,7 @@ const nodeBindProperty: OperationDefinition = {
             path: { type: 'string', description: '可选。原始属性路径（如 __comps__.1.badge），跳过 component/property 拼装' },
             bindings: {
                 type: 'array',
-                description: '批量绑定：每项 {uuid, component, property, target[, type]}，与单条参数二选一',
+                description: '批量绑定：每项 {uuid, component, property, target[, type]}，与单条参数二选一；当前多条只有第一条生效，建议逐条调用',
                 items: { type: 'object' },
             },
         },
@@ -1787,6 +1892,135 @@ const sceneReopen: OperationDefinition = {
     },
 };
 
+const sceneOpen: OperationDefinition = {
+    name: 'scene.open',
+    title: '打开场景',
+    description: '按 db:// 路径或 uuid 打开指定场景（默认先保存当前场景再切换，saveCurrent=false 可跳过保存）',
+    params: {
+        url: '场景资产 db:// 路径或 uuid，如 db://assets/lobby.scene',
+        saveCurrent: '切换前是否保存当前场景，默认 true',
+    },
+    schema: {
+        type: 'object',
+        properties: {
+            url: { type: 'string', description: '场景资产 db:// 路径或 uuid' },
+            saveCurrent: { type: 'boolean', description: '默认 true' },
+        },
+        required: ['url'],
+        additionalProperties: false,
+    },
+    async run(params) {
+        const url = pickString(params, 'url', '').trim();
+        if (!url) throw new Error('必须指定 url（db:// 路径或 uuid）');
+        let uuid = url;
+        if (url.startsWith('db://')) {
+            const assets: any[] = await Editor.Message.request(ASSET_DB, 'query-assets', { pattern: url });
+            const hit = (assets || []).find((a: any) => a.url === url) || (assets || [])[0];
+            if (!hit || !hit.uuid) throw new Error(`找不到场景资产: ${url}`);
+            uuid = String(hit.uuid);
+        }
+        const saveCurrent = params?.saveCurrent === false ? false : true;
+        if (saveCurrent) {
+            try {
+                await Editor.Message.request(SCENE, 'save-scene');
+            } catch (e) {
+                // 保存失败不阻断切换
+            }
+        }
+        // open-scene 可能复用内存里的脏场景（对已加载 uuid 会被忽略）：先切空场景强制干净重载
+        await Editor.Message.request(SCENE, 'load-empty-scene');
+        const opened = await Editor.Message.request(SCENE, 'open-scene', uuid);
+        return { opened, sceneUuid: uuid };
+    },
+};
+
+const projectSetDesignResolution: OperationDefinition = {
+    name: 'project.setDesignResolution',
+    title: '设置项目设计分辨率',
+    description:
+        '设置项目设计分辨率（等价于 项目设置→项目 面板：Editor.Profile.setProject 持久化到 settings/v2/packages/project.json，' +
+        '再发 project/change-design-resolution，scene 扩展监听该广播刷新画布）。' +
+        'width/height 必填（1~8192 整数），fitWidth/fitHeight 缺省沿用当前值；返回回读值与落盘校验结果。',
+    params: {
+        width: '设计分辨率宽，如 720',
+        height: '设计分辨率高，如 1280',
+        fitWidth: '可选。是否适配宽度，缺省沿用当前值',
+        fitHeight: '可选。是否适配高度，缺省沿用当前值',
+    },
+    schema: {
+        type: 'object',
+        properties: {
+            width: { type: 'integer', minimum: 1, maximum: 8192, description: '设计分辨率宽，如 720' },
+            height: { type: 'integer', minimum: 1, maximum: 8192, description: '设计分辨率高，如 1280' },
+            fitWidth: { type: 'boolean', description: '可选。是否适配宽度，缺省沿用当前值' },
+            fitHeight: { type: 'boolean', description: '可选。是否适配高度，缺省沿用当前值' },
+        },
+        required: ['width', 'height'],
+        additionalProperties: false,
+    },
+    async run(params) {
+        const width = Math.round(pickNumber(params, 'width', 0));
+        const height = Math.round(pickNumber(params, 'height', 0));
+        if (!(width >= 1 && width <= 8192) || !(height >= 1 && height <= 8192)) {
+            throw new Error(`width/height 必须是 1~8192 的整数，收到: ${JSON.stringify(params?.width)} x ${JSON.stringify(params?.height)}`);
+        }
+
+        // 当前值：官方 query-design-resolution 消息优先，取不到退回 Profile
+        let current: any = null;
+        try {
+            current = await (Editor.Message.request as any)('project', 'query-design-resolution');
+        } catch (e) {
+            current = null;
+        }
+        if (!current || typeof current !== 'object') {
+            current = await Editor.Profile.getProject('project', 'general.designResolution');
+        }
+        const before = {
+            width: Math.round(Number(current?.width)) || 0,
+            height: Math.round(Number(current?.height)) || 0,
+            fitWidth: current?.fitWidth === true,
+            fitHeight: current?.fitHeight === true,
+        };
+
+        const resolution = {
+            width,
+            height,
+            fitWidth: typeof params?.fitWidth === 'boolean' ? params.fitWidth : before.fitWidth,
+            fitHeight: typeof params?.fitHeight === 'boolean' ? params.fitHeight : before.fitHeight,
+        };
+
+        // 持久化（settings/v2/packages/project.json），官方 Profile API
+        await Editor.Profile.setProject('project', 'general.designResolution', resolution);
+        // 应用：与设置面板同一条消息，scene 扩展监听后刷新画布
+        await (Editor.Message.request as any)('project', 'change-design-resolution', resolution);
+
+        // 回读验证
+        let queried: any = null;
+        try {
+            queried = await (Editor.Message.request as any)('project', 'query-design-resolution');
+        } catch (e) {
+            queried = null;
+        }
+        // 落盘校验（Profile 异步写盘，稍等再读，best effort）
+        await sleep(500);
+        let file: any = null;
+        try {
+            const raw = JSON.parse(await readFile(join(projectRoot(), 'settings', 'v2', 'packages', 'project.json'), 'utf8'));
+            file = raw?.general?.designResolution ?? null;
+        } catch (e) {
+            file = null;
+        }
+        const persisted = !!(
+            file &&
+            Number(file.width) === width &&
+            Number(file.height) === height &&
+            file.fitWidth === resolution.fitWidth &&
+            file.fitHeight === resolution.fitHeight
+        );
+        return { before, applied: resolution, queried, file, persisted };
+    },
+};
+
 const nodeCreateComponentMsg: OperationDefinition = {
     name: 'node.createComponentMsg',
     title: '挂载组件（消息通道直通）',
@@ -1867,9 +2101,10 @@ const batchRun: OperationDefinition = {
         '参数值支持引用前项结果：形如 "$0.data.uuid" 的字符串会替换成第 0 项 results[0].data.uuid 的值，' +
         '也可用等价短写 "$0.uuid"（路径相对 results[i].data 解析）；可嵌套在对象/数组里' +
         '（例如 node.create 之后 node.move 传 {"uuid":"$0.data.uuid"}）。' +
-        'node.bindProperty 自带 bindings 批量绑定，仍可混用。',
+        '注意："$N" 引用仅在同一次调用内有效，跨批必须先取回真实 uuid 再引用。' +
+        'node.bindProperty 的 bindings 批量当前只有第一条生效，混用时逐条调用。',
     params: {
-        items: '操作数组，每项形如 {"op":"node.move","params":{...}}；params 里可用 "$<i>.<路径>" 引用第 i 项结果',
+        items: '操作数组，每项形如 {"op":"node.move","params":{...}}；params 里可用 "$<i>.<路径>" 引用第 i 项结果（仅限本批）',
         stopOnError: '遇错是否中止后续操作，默认 true',
     },
     schema: {
@@ -2003,6 +2238,8 @@ const registry: OperationDefinition[] = [
     sceneScriptDemo,
     sceneCapture,
     sceneReopen,
+    sceneOpen,
+    projectSetDesignResolution,
     nodeCreateComponentMsg,
     scriptCreate,
     scriptList,

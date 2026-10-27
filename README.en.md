@@ -23,7 +23,7 @@ The MCP protocol (JSON-RPC 2.0) is hand-written with zero third-party SDKs. Stre
 
 ```bash
 # 1. Put it into your Creator project (git clone or download the zip)
-git clone https://github.com/lixxix/cocos-mcp.git <your-project>/extensions/cocos-mcp
+git clone https://github.com/<your-name>/cocos-mcp.git <your-project>/extensions/cocos-mcp
 
 # 2. Install the panel runtime dependency (just fs-extra)
 cd <your-project>/extensions/cocos-mcp

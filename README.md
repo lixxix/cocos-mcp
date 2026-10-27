@@ -8,7 +8,7 @@ MCP 协议为手写实现（JSON-RPC 2.0），零第三方 SDK 依赖；默认 S
 
 ## 特性
 
-- **31 个 MCP 工具**（29 op + 2 内置）：场景树查询、节点增删移动、组件挂载、引用绑定（等价属性检查器拖拽，支持嵌套 prefab 与批量）、预制体保存、TS 脚本创建（等编译拿 cid）、资源导入 / 删除、场景截图、批量执行（参数可引用前项结果）；
+- **32 个 MCP 工具**（30 op + 2 内置）：场景树查询、节点增删移动、组件挂载、引用绑定（等价属性检查器拖拽，支持嵌套 prefab 与批量）、预制体保存、TS 脚本创建（等编译拿 cid）、资源导入 / 删除、场景截图、项目设计分辨率、批量执行（参数可引用前项结果）；
 - **消息通道优先**：操作走 `Editor.Message`，进编辑器 undo / dirty 体系，可正常保存进 scene / prefab；
 - **进程托管**：面板一键启动 / 停止 MCP Server 子进程，扩展重载时自动回收；
 - **AI 协作规范注入**：一键把设计规范写入项目根 `AGENTS.md`（锚点幂等合并，不碰用户内容），AI 助手会话自动读取；MCP 侧同步提供 `conventions` 工具；
@@ -23,7 +23,7 @@ MCP 协议为手写实现（JSON-RPC 2.0），零第三方 SDK 依赖；默认 S
 
 ```bash
 # 1. 放进你的 Creator 项目（git clone 或下载 zip 解压均可）
-git clone https://github.com/lixxix/cocos-mcp.git <你的项目>/extensions/cocos-mcp
+git clone https://github.com/<你的用户名>/cocos-mcp.git <你的项目>/extensions/cocos-mcp
 
 # 2. 安装面板运行依赖（仅 fs-extra）
 cd <你的项目>/extensions/cocos-mcp
@@ -67,11 +67,12 @@ ZCode / Claude Code 风格配置：
 - **「写入 AGENTS.md」**：把规范源 `mcp-server/conventions.md` 幂等写入当前项目根 `AGENTS.md`；
 - **「重载扩展」**：改完扩展代码后一键重载，等价于扩展管理器停用再启用。
 
-## 工具一览（29 op + 2 内置 = 31）
+## 工具一览（30 op + 2 内置 = 32）
 
 | 分组 | 工具 |
 |---|---|
 | 场景 | `scene_status` `scene_tree` `scene_save` `scene_reopen` `scene_capture` |
+| 项目 | `project_set_design_resolution`（设计分辨率，等价项目设置面板） |
 | 节点 | `node_create` `node_delete` `node_move`(`_engine`) `node_set_property`(`_engine`) `node_bind_property` `node_create_prefab` `node_debug` |
 | 组件 / 脚本 | `node_add_component` `node_remove_component` `node_list_components` `node_create_component_msg` `script_create` `script_list` `scene_script_info` `scene_script_demo` |
 | 资源 | `asset_list` `asset_delete` `asset_import` |
