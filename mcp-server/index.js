@@ -168,7 +168,7 @@ const BUILTIN_TOOLS = [
     },
     {
         name: 'conventions',
-        description: 'Cocos Creator 3.8 开发规范（核心原则/节点引用/节点层级/预制体划分/事件通信/交付要求）。在编写或修改任何 Cocos 代码、搭节点层级、拆预制体之前必须先调用本工具阅读规范；可传 section 只取标题匹配的小节（如 prefab、事件、交付）',
+        description: 'Cocos Creator 3.8 开发规范（核心原则/节点引用/节点层级/预制体划分/事件通信/UI布局适配：内置模板与Widget·Layout/交付要求/MCP坑位）。在编写或修改任何 Cocos 代码、搭节点层级、拆预制体之前必须先调用本工具阅读规范；可传 section 只取标题匹配的小节（如 prefab、事件、layout、坑位）',
         inputSchema: {
             type: 'object',
             properties: {

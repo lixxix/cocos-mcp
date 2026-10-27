@@ -268,6 +268,11 @@ Scene
 
 | 操作 | 坑 | 可靠做法 |
 |---|---|---|
+| `node.setProperty` | **设 `parent` 换父会半生效**（`_parent` 改了、新父 `_children` 没挂上），节点从场景树脱落、之后任何通道都找不到它，保存时被静默丢弃 | **MCP 不做 re-parent**：在新父节点下重建节点（照抄原组件属性）后删除原节点 |
+| `node.setProperty.engine` | 不传 `component` 时赋值落在 Node 实例上——`contentSize` 等组件属性是**假生效**（往节点上挂了个无用 JS 属性，回读 applied 显示成功） | 改组件属性必须传 `component`（如 `cc.UITransform`）；写入后读 `.scene` 落盘验证 |
+| `node.setProperty.engine`（直连工具） | 对象 value（`{"__uuid":...}`）会被字符串化存进去，引用字段变成垃圾字符串 | 引用赋值走 `batch_run`（对象参数保真）；赋组件引用后回读会因循环引用报 Maximum call stack，属无害——写值在报错前已完成 |
+| Sprite 组件 | `sizeMode` 默认 TRIMMED：赋 `spriteFrame` 时自动把 UITransform 改成裁剪尺寸，覆盖你设的 contentSize | 图标先设 `components.<i>.sizeMode=0`（CUSTOM）再设 contentSize |
+| 场景校验 | 节点/组件引用在 `.scene` 里序列化为 `{"__id__": N}`（不是 uuid），按 `__uuid__` 校验会误判为 null | 校验绑定时解析 `__id__` 指向的对象再比对 |
 | `node.setProperty` | `uuid` 不解析节点路径，传路径静默无效 | 只传真实 uuid（从 scene_tree / batch 结果取） |
 | `node.setProperty` | 多组件节点设 `contentSize` 静默失败 | 用 `node.setProperty.engine` 传 `{"__size":[w,h]}`（带 applied 回读，scene.save 后落盘） |
 | `node.bindProperty` | `bindings` 多条数组只有第一条生效 | 每条绑定单独一次调用（可并行发） |
@@ -281,6 +286,89 @@ Scene
 | 验证 | 消息通道多数属性无回读；`node.debug` 路径解析不稳 | 落盘 ground truth：直接读 `.scene` 文件（JSON，组件在 `_components[].__id__`） |
 
 组件索引规则：`create-node` 自动附 `cc.UITransform`（`components.0`），后续 `addComponent` 依次追加（Sprite/Label/Button=1，Mask 节点的 Button=2）；追加组件会改变既有索引，多组件节点操作前先 `node.listComponents` 确认。
+
+UI 批量搭建（列表/网格/滚动容器）的模板选择与 Layout 坑位另见第 9 节。
+
+---
+
+## 8. 资源导入参数：九宫格
+
+图片的九宫格边框不必在编辑器里切，直接改该图 `.meta` 中 spriteFrame 子资源（`subMetas.f9941`）`userData` 里的 `borderTop / borderBottom / borderLeft / borderRight`（单位：原始图像素）即可；改完调 `asset.import`（纯刷新模式）重新导入后生效。注意边框仅在 Sprite 组件 `type = 1`（SLICED 九宫格，0 SIMPLE / 2 TILED / 3 FILLED）时生效，设值用 `node.setProperty` 传 `components.<索引>.type = 1`。
+
+---
+
+## 9. UI 布局适配：内置模板 + Widget / Layout，禁止手摆坐标
+
+> 官方文档：《自动布局（Layout）》 https://docs.cocos.com/creator/3.8/manual/zh/ui-system/components/editor/layout.html ｜《对齐策略（Widget）》 https://docs.cocos.com/creator/3.8/manual/zh/ui-system/components/editor/widget.html
+> 搭 UI 前先读本节：能自动适配的不要手摆，能用内置模板的不要空节点手拼。
+
+### 9.1 优先用内置模板起步
+
+MCP `node_create` 的 `builtin` 参数直接实例化引擎自带模板（含默认组件与子结构），常用 UI 模板：
+
+| builtin 短名 | 内容 | 典型用途 |
+|---|---|---|
+| `ui/Canvas` | Canvas + Camera 完整结构 | UI 场景根 |
+| `ui/Widget` | 挂好 cc.Widget 的节点 | 贴边、居中、拉伸、分辨率适配 |
+| `ui/Layout` | 挂好 cc.Layout 的节点 | 列表 / 行列 / 网格容器 |
+| `ui/ScrollView` | view + content + Mask + 滚动条完整结构 | 可滚动列表 |
+| `ui/Button`、`ui/Label`、`ui/Sprite`、`ui/RichText` | 常用控件与显示节点 | 按钮、文本、底图、富文本 |
+| `ui/ProgressBar`、`ui/Slider`、`ui/Toggle`、`ui/ToggleContainer`、`ui/EditBox`、`ui/pageView` | 功能控件 | 血条、滑条、开关、输入、翻页 |
+| `ui/Mask`、`ui/Graphics`、`ui/ParticleSystem2D` | 裁剪、矢量绘制、2D 粒子 | 特殊显示 |
+
+注意：
+- 裸短名（`Button`）不存在，必须带 `ui/`、`3d/`、`light/` 等前缀；`pageView` 是小写 p。
+- 全量清单用 `asset_list(pattern="db://internal/default_prefab/**/*.prefab")` 查询。
+- 模板只含引擎默认值（Layout 模板默认 `type=NONE`，见 9.5），创建后必须按需求改属性。
+
+### 9.2 Widget 与 Layout 的分工
+
+两者都是"自动适配"，但职责不同，按职责选用，不互相替代：
+
+- **Widget 管节点自身相对父节点的对齐与拉伸**：贴边、居中、按百分比填满、随屏幕分辨率适配。竖屏 720×1280 的界面适配主要靠 Widget（`ui/Widget` 模板或直接加 cc.Widget）。
+- **Layout 管容器内子节点的排列**：横向 / 纵向 / 网格等间距排列子项，子项增删后自动重排。
+- 组合套路：面板根节点挂 Widget 适配分辨率 → 内部列表容器挂 Layout 排子项 → 需要滚动时套 `ui/ScrollView`（其 content 自带 Layout）。
+
+### 9.3 必须用 Layout 的场景（禁止手摆）
+
+同类元素等间距排列（背包格子、技能项、排行榜行、按钮组等），**一律用 Layout，禁止逐个摆坐标**——编辑器里不逐个 `node_move`，代码里不写 `setPosition(x * i, y)` 手算：
+- 网格用 `type=GRID`，需要固定行/列数加 `constraint`。
+- 动态增删子项的容器必须用 Layout：`instantiate` 的子项 `setParent` 进容器后由 Layout 自动重排，不许也不需要自己设位置。
+- 例外：纯静态、位置各不相同的装饰摆放可以直接定位；但同类元素超过 3 个时仍应改用 Layout。
+- Layout 容器的子项上**不要再挂 Widget**：Layout 接管子项位置/尺寸，两者互相拉扯。
+
+### 9.4 Layout 属性速查（枚举传数值）
+
+经 `node_set_property` 设 `components.<索引>.<字段>`，枚举字段传数值：
+
+| 字段 | 取值（数值） | 说明 |
+|---|---|---|
+| `type` | NONE=0 / HORIZONTAL=1 / VERTICAL=2 / GRID=3 | 布局方向，**默认 NONE＝无任何布局效果** |
+| `resizeMode` | NONE=0 / CONTAINER=1（容器随子项）/ CHILDREN=2（子项随容器） | 尺寸联动，**默认 NONE** |
+| `spacingX` / `spacingY` | 数字 | 子项间距 |
+| `paddingLeft` / `paddingRight` / `paddingTop` / `paddingBottom` | 数字 | 容器四边内边距 |
+| `startAxis` | HORIZONTAL=0 / VERTICAL=1 | 仅 GRID：先排哪根轴 |
+| `cellSize` | `{"width":w,"height":h}` | 仅 GRID＋CHILDREN：格子尺寸 |
+| `constraint` | NONE=0 / FIXED_ROW=1 / FIXED_COL=2 | 仅 GRID：固定行数/列数 |
+| `constraintNum` | 数字 | 配合 constraint 的行/列数 |
+| `horizontalDirection` | LEFT_TO_RIGHT=0 / RIGHT_TO_LEFT=1 | 默认从左往右 |
+| `verticalDirection` | BOTTOM_TO_TOP=0 / TOP_TO_BOTTOM=1 | 默认从上到下 |
+| `affectedByScale` | true/false | 子项缩放是否参与布局 |
+
+常用组合：
+- 竖向列表：`type=2`（VERTICAL）＋ `resizeMode=1`（CONTAINER，高度随子项自适应，配合 ScrollView）。
+- 固定 4 列网格：`type=3`＋`constraint=2`（FIXED_COL）＋`constraintNum=4`。
+- 固定尺寸格子：`type=3`＋`resizeMode=2`（CHILDREN）＋`cellSize`。
+
+### 9.5 Layout 坑位
+
+| 坑 | 说明 / 可靠做法 |
+|---|---|
+| 模板默认无效 | `ui/Layout` 创建出来 `type=NONE`、`resizeMode=NONE`，不排任何东西，看着像普通空节点；创建后第一步先设 `type`，必要时设 `resizeMode` |
+| 手摆子项被覆盖 | Layout 接管容器内子节点的位置（和尺寸），`node_move` 摆完会被布局重置；容器内子项位置一律交给 Layout |
+| 布局下一帧生效 | 属性设置后布局结果到下一帧才更新（引擎 API `layout.updateLayout()` 可立即刷新）；`scene_capture` 验证按第 7 节规则延时重拍 |
+| 子项要求 | 只有带 UITransform 的 UI 节点参与布局；不要在 Layout 子项上再挂 Widget（见 9.3） |
+| 落盘字段名 | `.scene` 文件里序列化为 `_layoutType` / `_resizeMode` / `_spacingX` 等 `_` 前缀名，读文件校验时按该名找 |
 
 ---
 
