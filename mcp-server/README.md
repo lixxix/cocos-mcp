@@ -165,16 +165,18 @@ curl -s -X DELETE http://127.0.0.1:3002/mcp -H "Mcp-Session-Id: <会话 id>"
 | `editor_info` | 编辑器 / 项目信息 | — |
 | `scene_status` | 场景就绪 / 脏标记 / 选中节点 | — |
 | `scene_tree` | 场景节点树（含 uuid、组件、坐标） | — |
-| `node_create` | 创建节点；`builtin`/`prefab` 可一步实例化内置模板或任意预制体（完整子树 + 默认资源引用） | `name?`, `parent?`, `builtin?`, `prefab?` |
+| `node_create` | 创建节点；`builtin`/`prefab` 可一步实例化内置模板或任意预制体（完整子树 + 默认资源引用）。模板模式返回结构化 `nodes:[{name,uuid,parent,components}]`（父在前），`batch_run` 里用 `"$N.nodes[i].uuid"` 引用子节点，无需解析 `subtree` 文本 | `name?`, `parent?`, `builtin?`, `prefab?` |
 | `node_delete` | 删除节点 | `uuid?` |
 | `node_move` | 移动节点（编辑器消息通道，走 undo） | `uuid?`, `x?`, `y?`, `z?` |
 | `node_move_engine` | 移动节点（场景脚本引擎通道） | `uuid?`, `x?`, `y?`, `z?` |
 | `node_set_property` | 设置属性（消息通道，走 undo）：Label 文本 / 尺寸 / 颜色 / `@property` 引用绑定 | `uuid?`, `path`, `value?`, `type?`, `dump?` |
 | `node_set_property_engine` | 设置属性（场景脚本引擎通道，引用绑定兜底） | `uuid?`, `component?`, `prop`, `value?` |
-| `node_bind_property` | **绑定引用属性**（`@property` 组件/节点/资产引用，等价属性检查器拖拽，支持嵌套 prefab 内组件、批量、自动回读验证） | `uuid?`, `component?`, `property`, `target?`, `type?`, `path?`, `bindings?` |
+| `node_bind_property` | **绑定引用属性**（`@property` 组件/节点/资产引用，等价属性检查器拖拽，支持嵌套 prefab 内组件、批量多条逐条提交全部生效、自动回读验证） | `uuid?`, `component?`, `property`, `target?`, `type?`, `path?`, `bindings?` |
 | `node_create_prefab` | 把场景节点（含子树）保存为 .prefab 资源，节点变为预制体实例（走 undo；父目录自动创建） | `node?`, `url?`, `overwrite?` |
-| `prefab_open` | 打开预制体进入编辑模式（等价资源管理器双击）。注意：`scene/open-scene` 对 prefab uuid 无效；预制体模式下 `query-current-scene` 仍返回场景页签 uuid，本工具用 `query-node-tree` 根 uuid 变化确认切换 | `url`, `saveCurrent?`, `timeout?` |
-| `scene_save` | 保存当前场景 | — |
+| `prefab_open` | 打开预制体进入编辑模式（等价资源管理器双击）。注意：`scene/open-scene` 对 prefab uuid 无效；预制体模式下 `query-current-scene` 仍返回场景页签 uuid，本工具用 `query-node-tree` 根 uuid 变化确认切换。已处于预制体模式时直接报错（确认无未保存修改可传 `assumeClean=true`） | `url`, `saveCurrent?`, `assumeClean?`, `timeout?` |
+| `scene_save` | 保存当前场景；预制体编辑模式下直接报错拒绝（该模式下保存是盲的且可能堵在保存对话框上） | — |
+| `scene_open` | 打开场景，默认先保存再切换。预制体模式下直接报错；`assumeClean=true` 跳过检查（走 open-scene 直切；目标若是预制体背后的已加载场景会被忽略，先开别的未加载场景脱离再切回） | `url`, `saveCurrent?`, `assumeClean?`, `timeout?` |
+| `scene_close` | 关闭当前场景文档，用于外部直改 .scene 后强制重开（场景文档切走后仍驻留内存，scene.open 对已加载文档只激活不重新解析）。脏场景直接拒绝（先 scene.save 或 `force=true`）；注意 3.8.8 实测 close-scene 对已打开文档可能返回 closed:false 关不掉，届时以「复制成新资产（新 uuid）再打开」替代 | `force?` |
 | `asset_list` | 列出资源 | `pattern?`, `limit?` |
 | `asset_delete` | 删除资源 | `uuid?`, `url?` |
 | `asset_import` | 把磁盘文件/目录导入 assets 并等待 uuid 就绪（含子资源，如 spriteFrame）；`src` 省略 = 纯刷新模式（文件已写进 assets，只触发导入） | `src?`, `dbPath`, `waitTimeout?` |
@@ -188,10 +190,10 @@ curl -s -X DELETE http://127.0.0.1:3002/mcp -H "Mcp-Session-Id: <会话 id>"
 | `node_debug` | 节点原始 dump（摸字段名用） | `node` |
 | `scene_capture` | 场景视口截图，base64 JPEG（需场景含 Canvas；可传 outPath 落盘） | `maxW?`, `outPath?` |
 | `scene_reopen` | 保存并重开当前场景（外部写入的 .ts 编译后需这一步才能在引擎里挂载） | — |
-| `scene_create` | 新建场景，等价资源管理器右键「新建 → 场景」（`asset-db/new-asset` + 内置模板；父目录自动创建；勿用 create-asset(null)——那会建出目录）；`open=true` 打开并轮询确认切换完成 | `url`, `template?`('2d'/'empty'), `open?`, `overwrite?`, `openTimeout?` |
+| `scene_create` | 新建场景，等价资源管理器右键「新建 → 场景」（`asset-db/new-asset` + 内置模板；父目录自动创建；勿用 create-asset(null)——那会建出目录）；`open=true` 打开并轮询确认切换完成；预制体模式下 `open=true` 直接报错（`assumeClean=true` 跳过） | `url`, `template?`('2d'/'empty'), `open?`, `overwrite?`, `openTimeout?`, `assumeClean?` |
 | `project_set_design_resolution` | 设置项目设计分辨率（等价项目设置面板；Profile 落盘 + 广播刷新画布，返回回读与落盘校验） | `width`, `height`, `fitWidth?`, `fitHeight?` |
 | `node_create_component_msg` | 挂组件（`scene/create-component` 消息通道直通，支持脚本 cid） | `node`, `component` |
-| `batch_run` | 批量顺序执行一组操作；参数支持 `"$0.uuid"` 引用前项结果；不可嵌套 | `items`, `stopOnError?` |
+| `batch_run` | 批量顺序执行一组操作；参数支持 `"$0.uuid"`/`"$0.data.uuid"` 引用前项结果（可嵌套在对象/数组里）；不可嵌套。配合 `node_create` 的 `nodes` 结构与 `node_bind_property` 的 `bindings` 批量，可纯声明式完成「实例化模板→定位子节点→设属性→绑引用」整链 | `items`, `stopOnError?` |
 | `mcp_status` | 查询 mcp-server 子进程运行状态（端口 / pid / 探活） | — |
 | `mcp_restart` | 重启 mcp-server 子进程（改 mcp-server/index.js 后生效） | `port?` |
 | `bridge_status` | 桥接诊断（内置） | — |

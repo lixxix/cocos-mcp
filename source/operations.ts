@@ -210,6 +210,95 @@ function countNodes(node: any): number {
     return 1 + children.reduce((sum: number, child: any) => sum + countNodes(child), 0);
 }
 
+/**
+ * 把 query-node-tree 的子树摊平成结构化数组（父在前），供 batch.run 的 "$N.nodes[i].uuid" 引用，
+ * 替代对 subtree 文本树的正则解析。
+ */
+function collectNodes(node: any, parentUuid: string | null, out: any[] = []): any[] {
+    if (!node) return out;
+    const uuid = dumpValue<string>(node.uuid, '');
+    out.push({
+        name: dumpValue<string>(node.name, '(未命名)'),
+        uuid,
+        parent: uuid ? parentUuid : null,
+        components: readNodeComponents(node)
+            .map((comp: any) => comp.type || comp.name)
+            .filter(Boolean),
+    });
+    const children: any[] = Array.isArray(node.children) ? node.children : [];
+    for (const child of children) collectNodes(child, uuid || null, out);
+    return out;
+}
+
+/**
+ * 判断当前是否处于预制体编辑模式（3.8.8 实测结构）：
+ * 预制体模式下 query-node-tree 的根是包了一层的临时场景「<预制体名>-scene」，
+ * 其首个子节点是名为 should_hide_in_hierarchy 的挂载节点，再往下才是预制体真正的根节点；
+ * 普通场景的根名就是场景文件名、没有这层包裹。
+ * 该模式下还有一连串盲区：query-current-scene 返回场景页签 uuid、query-dirty 恒 false、
+ * save-scene 对预制体文档无效（返回 null，还可能被「是否保存」对话框堵住）。
+ */
+async function detectPrefabMode(): Promise<{ inPrefabMode: boolean; prefabName: string; sceneName: string }> {
+    let tree: any = null;
+    try {
+        tree = await Editor.Message.request(SCENE, 'query-node-tree');
+    } catch (e) {
+        return { inPrefabMode: false, prefabName: '', sceneName: '' };
+    }
+    const sceneName = dumpValue<string>(tree && tree.name, '');
+    const children: any[] = Array.isArray(tree && tree.children) ? tree.children : [];
+    const firstChildName = dumpValue<string>(children[0] && children[0].name, '');
+    const inPrefabMode = /-scene$/.test(sceneName) && firstChildName === 'should_hide_in_hierarchy';
+    return {
+        inPrefabMode,
+        prefabName: inPrefabMode ? sceneName.replace(/-scene$/, '') : '',
+        sceneName,
+    };
+}
+
+/** 预制体编辑模式下拒绝保存/切换的统一报错（fail fast，避免静默堵在编辑器弹框上） */
+function prefabModeBlockedError(prefabName: string, action: string): Error {
+    return new Error(
+        `当前处于预制体编辑模式（${prefabName}），无法${action}。` +
+        '该模式下 query-dirty 恒 false、scene/save-scene 对预制体文档无效，切换文档可能弹「是否保存」对话框且无法自动处理。' +
+        '请先在编辑器里保存并关闭预制体页签回到普通场景后重试；确认预制体无未保存修改时可传 assumeClean=true 跳过本检查。'
+    );
+}
+
+/**
+ * 用 asset-db/open-asset 切换编辑文档并轮询确认（等价资源管理器双击）。
+ * 这是「普通场景 → 预制体编辑模式」的可靠通道（scene/open-scene 对 prefab uuid 无效）。
+ * 成功判定靠 query-node-tree 根 uuid 相对打开前变化（连续两次读到才算稳定）：
+ * 包裹场景 uuid 每次打开都会重新生成，不能用「等于某个固定值」判断。
+ */
+async function openAssetAndPoll(
+    uuid: string,
+    timeout: number
+): Promise<{ opened: boolean; from: string; current: string }> {
+    const beforeTree: any = await Editor.Message.request(SCENE, 'query-node-tree');
+    const from = dumpValue<string>(beforeTree && beforeTree.uuid, '');
+    await Editor.Message.request(ASSET_DB, 'open-asset', uuid);
+    const deadline = Date.now() + timeout;
+    let current = from;
+    let stable = 0;
+    while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        try {
+            const tree: any = await Editor.Message.request(SCENE, 'query-node-tree');
+            current = dumpValue<string>(tree && tree.uuid, '');
+        } catch (e) {
+            current = '';
+        }
+        if (current && current !== from) {
+            stable += 1;
+            if (stable >= 2) break;
+        } else {
+            stable = 0;
+        }
+    }
+    return { opened: !!(current && current !== from), from, current };
+}
+
 /** 空的参数 schema */
 function noParams(): JsonSchema {
     return { type: 'object', properties: {}, additionalProperties: false };
@@ -330,7 +419,7 @@ async function resolvePrefabAsset(builtin: string, prefab: string): Promise<{ uu
 const nodeCreate: OperationDefinition = {
     name: 'node.create',
     title: '创建节点',
-    description: '通过 scene/create-node 创建节点，走编辑器 undo 体系。三种用法：1) 默认建空节点（编辑器自动附加 cc.UITransform，勿重复 addComponent）；2) builtin=内置模板短名，映射到 db://internal/default_prefab/<短名>.prefab，一步实例化完整模板（含子节点与默认资源引用）；常用模板都带子目录前缀——UI 用 ui/Button、ui/Label、ui/Sprite、ui/Canvas、ui/Layout、ui/ScrollView 等（要求场景已有 Canvas），3D 用 3d/Cube、3d/Sphere，灯光用 light/Point Light；裸短名 Button、Label、Sprite 不存在，会报「找不到 prefab 资产」；全量列表用 asset_list(pattern="db://internal/default_prefab/**/*.prefab") 查询；3) prefab=任意预制体（db:// url 或 uuid），把已有 prefab 实例化进场景。注意：parent 必须是真实节点 uuid（不解析路径），引用无效时节点会被静默建到场景根（不报错），批量搭建后建议审计场景根是否出现孤儿节点',
+    description: '通过 scene/create-node 创建节点，走编辑器 undo 体系。三种用法：1) 默认建空节点（编辑器自动附加 cc.UITransform，勿重复 addComponent）；2) builtin=内置模板短名，映射到 db://internal/default_prefab/<短名>.prefab，一步实例化完整模板（含子节点与默认资源引用）；常用模板都带子目录前缀——UI 用 ui/Button、ui/Label、ui/Sprite、ui/Canvas、ui/Layout、ui/ScrollView 等（要求场景已有 Canvas），3D 用 3d/Cube、3d/Sphere，灯光用 light/Point Light；裸短名 Button、Label、Sprite 不存在，会报「找不到 prefab 资产」；全量列表用 asset_list(pattern="db://internal/default_prefab/**/*.prefab") 查询；3) prefab=任意预制体（db:// url 或 uuid），把已有 prefab 实例化进场景。注意：parent 必须是真实节点 uuid（不解析路径），引用无效时节点会被静默建到场景根（不报错），批量搭建后建议审计场景根是否出现孤儿节点。模板模式返回值含 nodes:[{name,uuid,parent,components}] 结构化子树（父在前、components 是类型名），batch.run 里用 "$N.nodes[i].uuid" 引用子节点，无需解析 subtree 文本',
     params: {
         name: '节点名，缺省时空节点用 MCP_Node、模板模式用模板名（并按父节点生成不重名名字）',
         parent: '父节点 uuid（不支持路径，无效时静默建到场景根）；留空则建在场景根下；填 @selection 则建在当前选中节点下',
@@ -422,6 +511,8 @@ const nodeCreate: OperationDefinition = {
             result.templateUuid = template.uuid;
             result.nodeCount = countNodes(found);
             result.subtree = formatNodeTree(found);
+            // 结构化子树（父在前）：batch.run 里用 "$N.nodes[i].uuid" 直接引用子节点，不必正则解析 subtree 文本
+            result.nodes = collectNodes(found, parent || null);
         }
         return result;
     },
@@ -866,7 +957,7 @@ const nodeBindProperty: OperationDefinition = {
         '{"node":"Pannel/badge","component":"ItemBadge"} 组件引用（推荐，自动解析目标 uuid 与 dump 类型，嵌套 prefab 内的组件也能定位）；' +
         '{"node":"路径或uuid"} 节点引用（cc.Node）；{"asset":"db://assets/x.png/spriteFrame"} 资产引用；null 解绑。' +
         'target 也可直接传 uuid 字符串（此时建议显式传 type）。' +
-        '批量：bindings=[{uuid,component,property,target},…] 形式上支持，但当前实现多条只有第一条真正生效（已知问题），请一条一个调用（可并行发）。' +
+        '批量：bindings=[{uuid,component,property,target},…] 多条逐条提交、全部回读验证；' +
         '绑定后自动回读场景实际引用验证，不一致会报错。',
     params: {
         uuid: '属性所在节点：uuid 或节点路径，留空用当前选中节点',
@@ -875,7 +966,7 @@ const nodeBindProperty: OperationDefinition = {
         target: '绑定目标：{node,component} 组件引用 | {node} 节点引用 | {asset:"db://…"} 资产 | uuid 字符串 | null 解绑',
         type: '可选。dump 类型名（默认自动推断：组件→类名、节点→cc.Node、资产→资源类型）',
         path: '可选。原始属性路径（如 __comps__.1.badge），传了就跳过 component/property 拼装',
-        bindings: '批量绑定数组（当前多条只有第一条生效，建议逐条调用），每项 {uuid,component,property,target[,type]}，与单条参数二选一',
+        bindings: '批量绑定数组，每项 {uuid,component,property,target[,type]}，与单条参数二选一；多条全部生效并逐条回读验证',
     },
     schema: {
         type: 'object',
@@ -891,7 +982,7 @@ const nodeBindProperty: OperationDefinition = {
             path: { type: 'string', description: '可选。原始属性路径（如 __comps__.1.badge），跳过 component/property 拼装' },
             bindings: {
                 type: 'array',
-                description: '批量绑定：每项 {uuid, component, property, target[, type]}，与单条参数二选一；当前多条只有第一条生效，建议逐条调用',
+                description: '批量绑定：每项 {uuid, component, property, target[, type]}，与单条参数二选一；多条全部生效并逐条回读验证',
                 items: { type: 'object' },
             },
         },
@@ -985,9 +1076,11 @@ const nodeBindProperty: OperationDefinition = {
             });
         }
 
-        // 4) 一次性提交：多个 {uuid,path,dump} 作为变参（与属性检查器批量写入同构，一条 undo）。
-        //    Editor.Message.request 的类型签名不是 rest 参数，这里按变参调用需要 cast。
-        await (Editor.Message.request as any)(SCENE, 'set-property', ...items);
+        // 4) 逐条提交：scene/set-property 每次只应用一条（变参形式第 2+ 条会被编辑器忽略，导致
+        //    旧实现「bindings 多条只有第一条生效」），所以这里一次一条；代价是 N 条 undo 记录。
+        for (const item of items) {
+            await (Editor.Message.request as any)(SCENE, 'set-property', item);
+        }
 
         // 5) 回读验证（场景脚本通道；场景进程还没加载新方法时降级为 unavailable，不阻塞绑定本身）
         const results: any[] = [];
@@ -1147,12 +1240,14 @@ const prefabOpen: OperationDefinition = {
     name: 'prefab.open',
     title: '打开预制体',
         description:
-            '进入预制体编辑模式（等价资源管理器里双击 .prefab）。先保存当前场景避免弹窗，' +
+            '进入预制体编辑模式（等价资源管理器里双击 .prefab）。普通场景下先保存当前场景避免弹窗，' +
             '再走 asset-db/open-asset 并轮询确认当前编辑文档切换完成。' +
+            '若已处于另一个预制体的编辑模式会直接报错（scene/save-scene 对预制体文档无效、切换可能弹「是否保存」对话框），确认包裹场景无未保存修改时可传 assumeClean=true 跳过检查。' +
             '注意：scene/open-scene 对 prefab uuid 无效（会被忽略）；scene.open 也不要用——它内部先 load-empty-scene，会产生无标题场景进而弹「保存」对话框。',
     params: {
         url: '预制体 db:// 路径或 uuid，如 db://assets/prefabs/Foo.prefab',
         saveCurrent: '进入前是否保存当前场景，默认 true',
+        assumeClean: '已处于预制体编辑模式时是否跳过安全检查继续切换（仅限确认当前预制体无未保存修改），默认 false',
         timeout: '等待进入预制体编辑模式的超时毫秒，默认 30000',
     },
     schema: {
@@ -1160,6 +1255,7 @@ const prefabOpen: OperationDefinition = {
         properties: {
             url: { type: 'string', description: '预制体 db:// 路径或 uuid' },
             saveCurrent: { type: 'boolean', description: '默认 true' },
+            assumeClean: { type: 'boolean', description: '预制体编辑模式下跳过安全检查，默认 false' },
             timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: '默认 30000' },
         },
         required: ['url'],
@@ -1177,7 +1273,14 @@ const prefabOpen: OperationDefinition = {
             }
             uuid = String(info.uuid);
         }
-        if (params?.saveCurrent !== false) {
+        // 已处于预制体编辑模式时直接尝试 open-asset 切换（prefab→prefab 未充分验证，失败走超时提示）
+        const mode = await detectPrefabMode();
+        if (mode.inPrefabMode) {
+            if (params?.assumeClean !== true) {
+                throw prefabModeBlockedError(mode.prefabName, `打开预制体 ${url}`);
+            }
+        }
+        if (params?.saveCurrent !== false && !mode.inPrefabMode) {
             try {
                 await Editor.Message.request(SCENE, 'save-scene');
             } catch (e) {
@@ -1189,29 +1292,9 @@ const prefabOpen: OperationDefinition = {
         // 注意 query-current-scene 在预制体模式下仍返回场景页签 uuid，不反映编辑中的文档；
         // 要用 query-node-tree 的根 uuid——预制体模式下文档是包了一层的临时场景
         // （<名字>-scene，根下有 should_hide_in_hierarchy），成功判定 = 根 uuid 相对打开前变化（连续两次读到才算稳定）
-        const beforeTree: any = await Editor.Message.request(SCENE, 'query-node-tree');
-        const before = dumpValue<string>(beforeTree?.uuid, '');
-        const requested = await Editor.Message.request(ASSET_DB, 'open-asset', uuid);
         const timeout = pickNumber(params, 'timeout', 30000) || 30000;
-        const deadline = Date.now() + timeout;
-        let current = before;
-        let stable = 0;
-        while (Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 300));
-            try {
-                const tree: any = await Editor.Message.request(SCENE, 'query-node-tree');
-                current = dumpValue<string>(tree?.uuid, '');
-            } catch (e) {
-                current = '';
-            }
-            if (current && current !== before) {
-                stable += 1;
-                if (stable >= 2) break;
-            } else {
-                stable = 0;
-            }
-        }
-        const result: any = { opened: !!(current && current !== before), prefabUuid: uuid, fromScene: before || null, currentScene: current || null, requested };
+        const switched = await openAssetAndPoll(uuid, timeout);
+        const result: any = { opened: switched.opened, prefabUuid: uuid, fromScene: switched.from || null, currentScene: switched.current || null, requested: true };
         if (!result.opened) {
             result.hint = '超时未切换文档：可能当前已处于该预制体的编辑模式，或当前是无标题未保存场景时编辑器弹了保存对话框（处理后重试）';
         }
@@ -1222,10 +1305,18 @@ const prefabOpen: OperationDefinition = {
 const sceneSave: OperationDefinition = {
     name: 'scene.save',
     title: '保存场景',
-    description: '通过 scene/save-scene 保存当前场景，返回保存结果',
+    description:
+        '通过 scene/save-scene 保存当前场景，返回保存结果。' +
+        '预制体编辑模式下会直接报错拒绝（该模式下保存是盲的：query-dirty 恒 false、save-scene 返回 null，还可能堵在「是否保存」对话框上），请先人工保存/关闭预制体页签',
     params: {},
     schema: noParams(),
     async run() {
+        // 预制体编辑模式下保存是盲的：query-dirty 恒 false、save-scene 返回 null，
+        // 还可能被「是否保存」对话框堵住（2026-10 建 rps.scene 时实测堵了 24 秒直到人工取消），直接拒绝
+        const mode = await detectPrefabMode();
+        if (mode.inPrefabMode) {
+            throw prefabModeBlockedError(mode.prefabName, '保存当前场景');
+        }
         const dirtyBefore = await Editor.Message.request(SCENE, 'query-dirty');
         // 注意：3.8.8 的 save-scene 返回的是场景 uuid，不是 db:// 路径
         const sceneUuid = await Editor.Message.request(SCENE, 'save-scene');
@@ -1976,13 +2067,15 @@ const sceneCreate: OperationDefinition = {
         '（handler=scene，template=db://internal/default_file_content/scene/scene-2d.scene）。' +
         '注意：create-asset 传 null 内容在 3.8.8 实测创建的是目录而非场景文件，不要用它建场景。' +
         '父目录不存在会自动逐级创建。open=true 时创建后 open-scene 并轮询确认切换完成；' +
-        '当前场景是无标题未保存场景时编辑器会弹保存对话框，人工处理后轮询自动继续，超时返回 opened=false 并给提示。',
+            '当前场景是无标题未保存场景时编辑器会弹保存对话框，人工处理后轮询自动继续，超时返回 opened=false 并给提示。' +
+            '预制体编辑模式下 open=true 会先报错拒绝（切换可能弹「是否保存」对话框且无法自动处理），确认包裹场景干净可传 assumeClean=true。',
     params: {
         url: '新场景 db:// 路径，如 db://assets/scenes/helloworld.scene',
         template: "'2d'（默认，含 Canvas+Camera）/ 'empty'（空场景），或完整模板路径 db://internal/default_file_content/scene/xxx.scene",
         open: '创建后是否立即打开该场景，默认 false',
         overwrite: '同名文件已存在时是否覆盖，默认 false',
         openTimeout: 'open=true 时等待场景切换完成的超时毫秒，默认 30000',
+        assumeClean: '当前处于预制体编辑模式时是否跳过安全检查继续打开（仅限确认预制体无未保存修改），默认 false',
     },
     schema: {
         type: 'object',
@@ -1992,6 +2085,7 @@ const sceneCreate: OperationDefinition = {
             open: { type: 'boolean', description: '创建后是否立即打开，默认 false' },
             overwrite: { type: 'boolean', description: '同名文件已存在时是否覆盖，默认 false' },
             openTimeout: { type: 'number', description: '等待场景切换超时毫秒，默认 30000' },
+            assumeClean: { type: 'boolean', description: '预制体编辑模式下跳过安全检查，默认 false' },
         },
         required: ['url'],
         additionalProperties: false,
@@ -2001,6 +2095,19 @@ const sceneCreate: OperationDefinition = {
         if (!url.startsWith('db://assets/')) throw new Error(`场景必须创建在 db://assets/ 下: ${url}`);
         if (!url.endsWith('.scene')) throw new Error(`场景路径必须以 .scene 结尾: ${url}`);
         const overwrite = params?.overwrite === true;
+
+        // 预制体编辑模式下切换文档会弹「是否保存」对话框且无法自动处理（save-scene 对预制体文档无效），
+        // 先检测先拒绝；确认包裹场景无未保存修改时可 assumeClean=true 跳过
+        let fromPrefabMode = false;
+        if (params?.open === true) {
+            const mode = await detectPrefabMode();
+            if (mode.inPrefabMode) {
+                if (params?.assumeClean !== true) throw prefabModeBlockedError(mode.prefabName, `创建并打开新场景 ${url}`);
+                // 新场景一定不是「已加载 uuid」，open-scene 可以正常切换（见 scene.open 内注释），
+                // 但 query-current-scene 在脱离前是盲的——下面的轮询在脱离后自然拿到正确 uuid
+                fromPrefabMode = true;
+            }
+        }
 
         // 逐级确保父目录存在（create-asset 的 source 传 null 即创建目录）
         const folderSegments = url.slice('db://assets/'.length).split('/').slice(0, -1);
@@ -2051,6 +2158,7 @@ const sceneCreate: OperationDefinition = {
             }
             result.opened = current === String(info.uuid);
             result.currentScene = current || null;
+            if (fromPrefabMode) result.fromPrefabMode = true;
             if (!result.opened) {
                 result.hint = '超时未切换到新场景：当前场景未保存时 open-scene 会弹保存对话框，在编辑器里处理该对话框后可用 scene.open 重试';
             }
@@ -2062,16 +2170,23 @@ const sceneCreate: OperationDefinition = {
 const sceneOpen: OperationDefinition = {
     name: 'scene.open',
     title: '打开场景',
-    description: '按 db:// 路径或 uuid 打开指定场景（默认先保存当前场景再切换，saveCurrent=false 可跳过保存）',
+    description:
+        '按 db:// 路径或 uuid 打开指定场景（默认先保存当前场景再切换，saveCurrent=false 可跳过保存）。' +
+        '预制体编辑模式下会先报错拒绝（save-scene 对预制体文档无效、切换可能弹「是否保存」对话框），' +
+        '确认包裹场景干净可传 assumeClean=true，此时跳过保存与 load-empty-scene 直接切换',
     params: {
         url: '场景资产 db:// 路径或 uuid，如 db://assets/lobby.scene',
         saveCurrent: '切换前是否保存当前场景，默认 true',
+        assumeClean: '当前处于预制体编辑模式时是否跳过安全检查继续切换（仅限确认预制体无未保存修改），默认 false',
+        timeout: 'assumeClean 切换路径（open-asset 通道）的轮询超时毫秒，默认 30000',
     },
     schema: {
         type: 'object',
         properties: {
             url: { type: 'string', description: '场景资产 db:// 路径或 uuid' },
             saveCurrent: { type: 'boolean', description: '默认 true' },
+            assumeClean: { type: 'boolean', description: '预制体编辑模式下跳过安全检查，默认 false' },
+            timeout: { type: 'integer', description: '预制体模式切换轮询超时毫秒，默认 30000' },
         },
         required: ['url'],
         additionalProperties: false,
@@ -2086,18 +2201,110 @@ const sceneOpen: OperationDefinition = {
             if (!hit || !hit.uuid) throw new Error(`找不到场景资产: ${url}`);
             uuid = String(hit.uuid);
         }
+        const mode = await detectPrefabMode();
+        const fromPrefab = mode.inPrefabMode;
+        if (fromPrefab && params?.assumeClean !== true) {
+            throw prefabModeBlockedError(mode.prefabName, `打开场景 ${url}`);
+        }
         const saveCurrent = params?.saveCurrent === false ? false : true;
-        if (saveCurrent) {
+        if (saveCurrent && !fromPrefab) {
             try {
                 await Editor.Message.request(SCENE, 'save-scene');
             } catch (e) {
                 // 保存失败不阻断切换
             }
         }
+        if (fromPrefab) {
+            // 实测（2026-10）：预制体模式下 open-scene 对「已加载的场景 uuid」（背后的场景页签）会被忽略，
+            // 对未加载的场景可以正常切换；close-scene 在该模式下无效、不要用。
+            // query-current-scene 在该模式下是盲的（返回包裹场景 uuid），所以先用 detectPrefabMode 判断是否脱离
+            try {
+                await Editor.Message.request(SCENE, 'open-scene', uuid);
+            } catch (e) {
+                // 可能静默被忽略，交给轮询判断
+            }
+            const deadline = Date.now() + (pickNumber(params, 'timeout', 30000) || 30000);
+            let exited = false;
+            while (Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                const now = await detectPrefabMode();
+                if (!now.inPrefabMode) {
+                    exited = true;
+                    break;
+                }
+            }
+            if (!exited) {
+                return {
+                    opened: false,
+                    sceneUuid: uuid,
+                    fromPrefabMode: true,
+                    hint: 'open-scene 未生效：目标场景可能正是预制体背后的场景页签（已加载的 uuid 会被忽略）。先随便打开另一个未加载的场景脱离预制体模式，再切回目标场景',
+                };
+            }
+            let current = '';
+            const confirmDeadline = Date.now() + 10000;
+            while (Date.now() < confirmDeadline) {
+                try {
+                    const st: any = await Editor.Message.request(SCENE, 'query-current-scene');
+                    current = typeof st === 'string' ? st : (st && st.uuid) || '';
+                } catch (e) {
+                    current = '';
+                }
+                if (current === uuid) break;
+                await new Promise((resolve) => setTimeout(resolve, 300));
+            }
+            const result: any = { opened: current === uuid, sceneUuid: uuid, fromPrefabMode: true, currentScene: current || null };
+            if (!result.opened) {
+                result.hint = '已脱离预制体模式，但目标场景切换未确认（可重试 scene.open）';
+            }
+            return result;
+        }
         // open-scene 可能复用内存里的脏场景（对已加载 uuid 会被忽略）：先切空场景强制干净重载
         await Editor.Message.request(SCENE, 'load-empty-scene');
         const opened = await Editor.Message.request(SCENE, 'open-scene', uuid);
         return { opened, sceneUuid: uuid };
+    },
+};
+
+const sceneClose: OperationDefinition = {
+    name: 'scene.close',
+    title: '关闭当前场景',
+    description:
+        '关闭当前场景文档（scene/close-scene）。核心用途：外部直改过 .scene 文件后强制重开——' +
+        '场景文档切走后仍驻留内存（页签缓存），scene.open 对已加载文档只会激活不会重新解析文件，' +
+        '所以「激活目标场景 → scene.close 驱逐 → 改文件 → asset.import 刷新 → scene.open」才能让外部修改生效。' +
+        '有未保存改动时关闭会弹「是否保存」对话框且无法自动处理，本操作先查 query-dirty，脏则直接拒绝' +
+        '（先 scene.save，或确认可丢弃时传 force=true）。预制体编辑模式下 close-scene 无效，直接拒绝。',
+    params: {
+        force: '有未保存改动时是否仍尝试关闭（可能弹保存对话框阻塞），默认 false',
+    },
+    schema: {
+        type: 'object',
+        properties: {
+            force: { type: 'boolean', description: '默认 false' },
+        },
+        additionalProperties: false,
+    },
+    async run(params) {
+        const mode = await detectPrefabMode();
+        if (mode.inPrefabMode) throw prefabModeBlockedError(mode.prefabName, '关闭场景文档');
+        let dirty = false;
+        try {
+            dirty = dumpValue<boolean>(await Editor.Message.request(SCENE, 'query-dirty'), false) === true;
+        } catch (e) {
+            // query-dirty 不可用时按不脏处理（close-scene 自身对脏场景的行为交由编辑器）
+        }
+        if (dirty && params?.force !== true) {
+            throw new Error('当前场景有未保存改动，关闭会弹「是否保存」对话框。请先 scene.save；确认可丢弃时传 force=true。');
+        }
+        const closed = dumpValue<boolean>(await Editor.Message.request(SCENE, 'close-scene'), false);
+        let current = '';
+        try {
+            current = dumpValue<string>(await Editor.Message.request(SCENE, 'query-current-scene'), '') || '';
+        } catch (e) {
+            // 关闭后可能没有活动文档，query 失败属正常
+        }
+        return { closed, currentScene: current || null };
     },
 };
 
@@ -2235,17 +2442,19 @@ const nodeCreateComponentMsg: OperationDefinition = {
  * 两种路径写法等价：
  *   "$0.data.uuid" —— 从 results[i] 起写全（与文档示例、结果 JSON 的字面结构一致）；
  *   "$0.uuid"      —— 相对 results[i].data 的短写法。
+ * 路径段支持数组下标（如 "$0.nodes[1].uuid"，对应 node.create 返回的结构化子树）。
  */
 function resolveResultRefs(value: any, results: any[]): any {
     if (typeof value === 'string') {
-        const m = /^\$(\d+)(?:\.([\w.]+))?$/.exec(value);
+        const m = /^\$(\d+)(?:\.([\w.[\]]+))?$/.exec(value);
         if (!m) return value;
         const hit = results[Number(m[1])];
         if (!hit || !hit.ok) throw new Error(`引用 $${m[1]} 失败：该项未成功执行`);
         const segs = (m[2] || '').split('.').filter(Boolean);
         let cur: any = segs[0] === 'data' ? hit : hit.data;
         for (const key of segs) {
-            cur = cur?.[key];
+            const im = /^(.*?)\[(\d+)\]$/.exec(key);
+            cur = im ? cur?.[im[1]]?.[Number(im[2])] : cur?.[key];
         }
         return cur;
     }
@@ -2267,9 +2476,9 @@ const batchRun: OperationDefinition = {
         '返回逐项结果。batch.run 不允许嵌套。' +
         '参数值支持引用前项结果：形如 "$0.data.uuid" 的字符串会替换成第 0 项 results[0].data.uuid 的值，' +
         '也可用等价短写 "$0.uuid"（路径相对 results[i].data 解析）；可嵌套在对象/数组里' +
-        '（例如 node.create 之后 node.move 传 {"uuid":"$0.data.uuid"}）。' +
+        '（例如 node.create 之后 node.move 传 {"uuid":"$0.data.uuid"}）；路径段支持数组下标（"$0.nodes[1].uuid" 直达模板子节点）。' +
         '注意："$N" 引用仅在同一次调用内有效，跨批必须先取回真实 uuid 再引用。' +
-        'node.bindProperty 的 bindings 批量当前只有第一条生效，混用时逐条调用。',
+        'node.bindProperty 的 bindings 批量为多条逐条提交、全部生效。',
     params: {
         items: '操作数组，每项形如 {"op":"node.move","params":{...}}；params 里可用 "$<i>.<路径>" 引用第 i 项结果（仅限本批）',
         stopOnError: '遇错是否中止后续操作，默认 true',
@@ -2408,6 +2617,7 @@ const registry: OperationDefinition[] = [
     sceneReopen,
     sceneCreate,
     sceneOpen,
+    sceneClose,
     projectSetDesignResolution,
     nodeCreateComponentMsg,
     scriptCreate,
