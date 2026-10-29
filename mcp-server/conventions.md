@@ -281,7 +281,9 @@ Scene
 | 节点颜色 | 节点级 `color` 对渲染无效 | 设 `components.<索引>.color` |
 | `scene.capture` | 异步 repaint，刚切换节点激活状态会拿到旧帧（连续两次字节量相同即旧帧） | sleep ~1.5s 后重拍；outPath 用绝对路径 |
 | `scene.reopen` | 外部写入的 .ts 不会因此编译注册 | 对每个改动过的脚本调一次 `asset.import`（纯刷新模式，uuid 不变、cid 稳定） |
+| 新建场景 | `asset-db create-asset(url, null)` 在 3.8.8 创建的是**目录**不是场景文件（meta importer=directory），返回 ok 但资产不可用；另：当前场景无标题未保存时 `open-scene` 会弹保存对话框阻塞流程 | 用 `scene_create` op（内部走 `asset-db/new-asset` + 内置模板 `db://internal/default_file_content/scene/scene-2d.scene`，与编辑器右键新建同通道，open=true 轮询确认切换）；不要先 load-empty-scene 再 open |
 | `scene.open` | 会先保存当前场景再切换；先切空场景强制干净重载，避免复用内存脏场景 | 崩溃恢复后先 scene_tree 查重名/孤儿再继续 |
+| 打开预制体 | `scene/open-scene` 对 prefab uuid **无效**（返回 undefined、场景不切换）；且预制体编辑模式下 `query-current-scene` 仍返回场景页签 uuid，不反映编辑中的文档（`query-node-tree` 才返回包了一层的临时场景 `<名字>-scene`，根下有 `should_hide_in_hierarchy`）；用 `scene.open` 打开预制体还会因内部 load-empty-scene 弹保存对话框 | 用 `prefab_open` op（`asset-db/open-asset` + `query-node-tree` 根 uuid 变化轮询确认）；判断"当前是否在预制体编辑模式"看 `scene_status`/`scene_tree` 的 sceneName 是否为 `<名字>-scene` |
 | 默认值陷阱 | Label 默认 `string='label'`、`fontSize=40`；UITransform 默认 `100×100` | 批量搭建后按这两类默认值审计漏设节点 |
 | 验证 | 消息通道多数属性无回读；`node.debug` 路径解析不稳 | 落盘 ground truth：直接读 `.scene` 文件（JSON，组件在 `_components[].__id__`） |
 

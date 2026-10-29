@@ -1143,6 +1143,82 @@ const nodeCreatePrefab: OperationDefinition = {
     },
 };
 
+const prefabOpen: OperationDefinition = {
+    name: 'prefab.open',
+    title: '打开预制体',
+        description:
+            '进入预制体编辑模式（等价资源管理器里双击 .prefab）。先保存当前场景避免弹窗，' +
+            '再走 asset-db/open-asset 并轮询确认当前编辑文档切换完成。' +
+            '注意：scene/open-scene 对 prefab uuid 无效（会被忽略）；scene.open 也不要用——它内部先 load-empty-scene，会产生无标题场景进而弹「保存」对话框。',
+    params: {
+        url: '预制体 db:// 路径或 uuid，如 db://assets/prefabs/Foo.prefab',
+        saveCurrent: '进入前是否保存当前场景，默认 true',
+        timeout: '等待进入预制体编辑模式的超时毫秒，默认 30000',
+    },
+    schema: {
+        type: 'object',
+        properties: {
+            url: { type: 'string', description: '预制体 db:// 路径或 uuid' },
+            saveCurrent: { type: 'boolean', description: '默认 true' },
+            timeout: { type: 'integer', minimum: 1000, maximum: 120000, description: '默认 30000' },
+        },
+        required: ['url'],
+        additionalProperties: false,
+    },
+    async run(params) {
+        const url = pickString(params, 'url', '').trim();
+        if (!url) throw new Error('必须指定 url（db:// 路径或 uuid）');
+        let uuid = url;
+        if (url.startsWith('db://')) {
+            const info: any = await Editor.Message.request(ASSET_DB, 'query-asset-info', url);
+            if (!info || !info.uuid) throw new Error(`找不到预制体资产: ${url}`);
+            if (info.type && info.type !== 'prefab' && info.type !== 'cc.Prefab') {
+                throw new Error(`目标不是预制体（${info.type}）: ${info.url || url}`);
+            }
+            uuid = String(info.uuid);
+        }
+        if (params?.saveCurrent !== false) {
+            try {
+                await Editor.Message.request(SCENE, 'save-scene');
+            } catch (e) {
+                // 保存失败不阻断（无标题未保存场景会弹对话框，人工处理后轮询继续）
+            }
+        }
+        // scene/open-scene 对 prefab uuid 无效（实测被忽略、场景不切换）；
+        // 打开预制体的正确通道是 asset-db/open-asset（等价资源管理器双击）。
+        // 注意 query-current-scene 在预制体模式下仍返回场景页签 uuid，不反映编辑中的文档；
+        // 要用 query-node-tree 的根 uuid——预制体模式下文档是包了一层的临时场景
+        // （<名字>-scene，根下有 should_hide_in_hierarchy），成功判定 = 根 uuid 相对打开前变化（连续两次读到才算稳定）
+        const beforeTree: any = await Editor.Message.request(SCENE, 'query-node-tree');
+        const before = dumpValue<string>(beforeTree?.uuid, '');
+        const requested = await Editor.Message.request(ASSET_DB, 'open-asset', uuid);
+        const timeout = pickNumber(params, 'timeout', 30000) || 30000;
+        const deadline = Date.now() + timeout;
+        let current = before;
+        let stable = 0;
+        while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            try {
+                const tree: any = await Editor.Message.request(SCENE, 'query-node-tree');
+                current = dumpValue<string>(tree?.uuid, '');
+            } catch (e) {
+                current = '';
+            }
+            if (current && current !== before) {
+                stable += 1;
+                if (stable >= 2) break;
+            } else {
+                stable = 0;
+            }
+        }
+        const result: any = { opened: !!(current && current !== before), prefabUuid: uuid, fromScene: before || null, currentScene: current || null, requested };
+        if (!result.opened) {
+            result.hint = '超时未切换文档：可能当前已处于该预制体的编辑模式，或当前是无标题未保存场景时编辑器弹了保存对话框（处理后重试）';
+        }
+        return result;
+    },
+};
+
 const sceneSave: OperationDefinition = {
     name: 'scene.save',
     title: '保存场景',
@@ -1892,6 +1968,97 @@ const sceneReopen: OperationDefinition = {
     },
 };
 
+const sceneCreate: OperationDefinition = {
+    name: 'scene.create',
+    title: '新建场景',
+    description:
+        '用 asset-db/new-asset 按编辑器内置模板新建场景，与资源管理器右键「新建 → 场景」同一通道' +
+        '（handler=scene，template=db://internal/default_file_content/scene/scene-2d.scene）。' +
+        '注意：create-asset 传 null 内容在 3.8.8 实测创建的是目录而非场景文件，不要用它建场景。' +
+        '父目录不存在会自动逐级创建。open=true 时创建后 open-scene 并轮询确认切换完成；' +
+        '当前场景是无标题未保存场景时编辑器会弹保存对话框，人工处理后轮询自动继续，超时返回 opened=false 并给提示。',
+    params: {
+        url: '新场景 db:// 路径，如 db://assets/scenes/helloworld.scene',
+        template: "'2d'（默认，含 Canvas+Camera）/ 'empty'（空场景），或完整模板路径 db://internal/default_file_content/scene/xxx.scene",
+        open: '创建后是否立即打开该场景，默认 false',
+        overwrite: '同名文件已存在时是否覆盖，默认 false',
+        openTimeout: 'open=true 时等待场景切换完成的超时毫秒，默认 30000',
+    },
+    schema: {
+        type: 'object',
+        properties: {
+            url: { type: 'string', description: '新场景 db:// 路径，如 db://assets/scenes/helloworld.scene' },
+            template: { type: 'string', description: "'2d'（默认）/ 'empty'，或完整模板 db:// 路径" },
+            open: { type: 'boolean', description: '创建后是否立即打开，默认 false' },
+            overwrite: { type: 'boolean', description: '同名文件已存在时是否覆盖，默认 false' },
+            openTimeout: { type: 'number', description: '等待场景切换超时毫秒，默认 30000' },
+        },
+        required: ['url'],
+        additionalProperties: false,
+    },
+    async run(params) {
+        const url = pickString(params, 'url', '').trim();
+        if (!url.startsWith('db://assets/')) throw new Error(`场景必须创建在 db://assets/ 下: ${url}`);
+        if (!url.endsWith('.scene')) throw new Error(`场景路径必须以 .scene 结尾: ${url}`);
+        const overwrite = params?.overwrite === true;
+
+        // 逐级确保父目录存在（create-asset 的 source 传 null 即创建目录）
+        const folderSegments = url.slice('db://assets/'.length).split('/').slice(0, -1);
+        let folderUrl = 'db://assets';
+        for (const segment of folderSegments) {
+            if (!segment) continue;
+            folderUrl = `${folderUrl}/${segment}`;
+            const exists = await Editor.Message.request(ASSET_DB, 'query-asset-info', folderUrl);
+            if (!exists) {
+                const created = await Editor.Message.request(ASSET_DB, 'create-asset', folderUrl, null);
+                if (!created) throw new Error(`创建目录失败: ${folderUrl}`);
+            }
+        }
+
+        let template = pickString(params, 'template', '').trim() || '2d';
+        if (template === '2d') template = 'db://internal/default_file_content/scene/scene-2d.scene';
+        else if (template === 'empty' || template === '3d') template = 'db://internal/default_file_content/scene/default.scene';
+        const info: any = await Editor.Message.request(ASSET_DB, 'new-asset', {
+            handler: 'scene',
+            target: url,
+            template,
+            overwrite,
+        });
+        if (!info || !info.uuid) {
+            throw new Error(`new-asset 没有返回资源信息: ${url}（同名文件已存在？可传 overwrite=true）`);
+        }
+        const result: any = { uuid: info.uuid, url: info.url || url, file: info.file || null, template };
+
+        if (params?.open === true) {
+            // 不做 load-empty-scene：它会产生无标题场景，导致随后的 open-scene 弹「保存当前场景」对话框
+            const timeout = pickNumber(params, 'openTimeout', 30000) || 30000;
+            try {
+                await Editor.Message.request(SCENE, 'open-scene', info.uuid);
+            } catch (e) {
+                // open-scene 可能静默被忽略，交给下面的轮询判断
+            }
+            const deadline = Date.now() + timeout;
+            let current = '';
+            while (Date.now() < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                try {
+                    const status: any = await Editor.Message.request(SCENE, 'query-current-scene');
+                    current = typeof status === 'string' ? status : (status && status.uuid) || '';
+                } catch (e) {
+                    current = '';
+                }
+                if (current === String(info.uuid)) break;
+            }
+            result.opened = current === String(info.uuid);
+            result.currentScene = current || null;
+            if (!result.opened) {
+                result.hint = '超时未切换到新场景：当前场景未保存时 open-scene 会弹保存对话框，在编辑器里处理该对话框后可用 scene.open 重试';
+            }
+        }
+        return result;
+    },
+};
+
 const sceneOpen: OperationDefinition = {
     name: 'scene.open',
     title: '打开场景',
@@ -2227,6 +2394,7 @@ const registry: OperationDefinition[] = [
     nodeSetPropertyEngine,
     nodeBindProperty,
     nodeCreatePrefab,
+    prefabOpen,
     sceneSave,
     assetList,
     assetDelete,
@@ -2238,6 +2406,7 @@ const registry: OperationDefinition[] = [
     sceneScriptDemo,
     sceneCapture,
     sceneReopen,
+    sceneCreate,
     sceneOpen,
     projectSetDesignResolution,
     nodeCreateComponentMsg,

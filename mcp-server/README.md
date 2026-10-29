@@ -172,7 +172,8 @@ curl -s -X DELETE http://127.0.0.1:3002/mcp -H "Mcp-Session-Id: <会话 id>"
 | `node_set_property` | 设置属性（消息通道，走 undo）：Label 文本 / 尺寸 / 颜色 / `@property` 引用绑定 | `uuid?`, `path`, `value?`, `type?`, `dump?` |
 | `node_set_property_engine` | 设置属性（场景脚本引擎通道，引用绑定兜底） | `uuid?`, `component?`, `prop`, `value?` |
 | `node_bind_property` | **绑定引用属性**（`@property` 组件/节点/资产引用，等价属性检查器拖拽，支持嵌套 prefab 内组件、批量、自动回读验证） | `uuid?`, `component?`, `property`, `target?`, `type?`, `path?`, `bindings?` |
-| `node_create_prefab` | 把场景节点（含子树）保存为 .prefab 资源，节点变为预制体实例（走 undo） | `node?`, `url?`, `overwrite?` |
+| `node_create_prefab` | 把场景节点（含子树）保存为 .prefab 资源，节点变为预制体实例（走 undo；父目录自动创建） | `node?`, `url?`, `overwrite?` |
+| `prefab_open` | 打开预制体进入编辑模式（等价资源管理器双击）。注意：`scene/open-scene` 对 prefab uuid 无效；预制体模式下 `query-current-scene` 仍返回场景页签 uuid，本工具用 `query-node-tree` 根 uuid 变化确认切换 | `url`, `saveCurrent?`, `timeout?` |
 | `scene_save` | 保存当前场景 | — |
 | `asset_list` | 列出资源 | `pattern?`, `limit?` |
 | `asset_delete` | 删除资源 | `uuid?`, `url?` |
@@ -187,6 +188,7 @@ curl -s -X DELETE http://127.0.0.1:3002/mcp -H "Mcp-Session-Id: <会话 id>"
 | `node_debug` | 节点原始 dump（摸字段名用） | `node` |
 | `scene_capture` | 场景视口截图，base64 JPEG（需场景含 Canvas；可传 outPath 落盘） | `maxW?`, `outPath?` |
 | `scene_reopen` | 保存并重开当前场景（外部写入的 .ts 编译后需这一步才能在引擎里挂载） | — |
+| `scene_create` | 新建场景，等价资源管理器右键「新建 → 场景」（`asset-db/new-asset` + 内置模板；父目录自动创建；勿用 create-asset(null)——那会建出目录）；`open=true` 打开并轮询确认切换完成 | `url`, `template?`('2d'/'empty'), `open?`, `overwrite?`, `openTimeout?` |
 | `project_set_design_resolution` | 设置项目设计分辨率（等价项目设置面板；Profile 落盘 + 广播刷新画布，返回回读与落盘校验） | `width`, `height`, `fitWidth?`, `fitHeight?` |
 | `node_create_component_msg` | 挂组件（`scene/create-component` 消息通道直通，支持脚本 cid） | `node`, `component` |
 | `batch_run` | 批量顺序执行一组操作；参数支持 `"$0.uuid"` 引用前项结果；不可嵌套 | `items`, `stopOnError?` |
